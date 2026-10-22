@@ -79,6 +79,10 @@ class WtClient:
             raise SyncError(f"{response.status_code}: {detail}")
         return response.json() if response.content else None
 
+    def me(self) -> dict[str, Any]:
+        """Angemeldeter Benutzer (prüft Adresse und API-Key)."""
+        return self._call("GET", "/api/auth/me")
+
     def projects(self) -> list[dict[str, Any]]:
         return self._call("GET", "/api/projects")
 
