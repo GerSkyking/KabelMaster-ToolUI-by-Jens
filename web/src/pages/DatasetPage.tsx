@@ -10,6 +10,7 @@ import { ConflictsTab } from "../tools/ConflictsTab";
 import { KmkTool } from "../tools/KmkTool";
 import { OverviewTab } from "../tools/OverviewTab";
 import { BatchTool, HighlightTool, SearchTool } from "../tools/SimpleTools";
+import { TranslateTool } from "../tools/TranslateTool";
 import type { ToolProps } from "../tools/types";
 
 interface Share { id: number; label: string; mode: string; expires_at: string; revoked: boolean }
@@ -78,6 +79,7 @@ const TABS = [
   { id: "highlight", label: "Farbmarkierung" },
   { id: "kmk", label: "KMK" },
   { id: "cabinet", label: "Schrank-Erkennung" },
+  { id: "translate", label: "Übersetzer" },
   { id: "overview", label: "Übersicht" },
   { id: "conflicts", label: "Konflikte" },
 ] as const;
@@ -147,6 +149,7 @@ export function DatasetPage() {
       {props && tab === "highlight" && <HighlightTool {...props} />}
       {props && tab === "kmk" && <KmkTool {...props} />}
       {props && tab === "cabinet" && <CabinetTool {...props} />}
+      {props && tab === "translate" && <TranslateTool {...props} />}
       {props && tab === "overview" && <OverviewTab {...props} hasRoutes={!!(props.mapping.target1 || props.mapping.target2)} />}
       {props && tab === "conflicts" && <ConflictsTab backend={backend} datasetId={datasetId} />}
     </div>

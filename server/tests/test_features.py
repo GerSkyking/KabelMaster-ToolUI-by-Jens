@@ -285,3 +285,79 @@ def test_delete_project_removes_everything(admin, tmp_path):
         assert db.scalar(select(func.count()).select_from(Row)) == 0
         assert db.scalar(select(func.count()).select_from(Note)) == 0
     assert admin.get("/api/projects").json() == []
+
+
+# ---- Übersetzer ----
+
+def _translate_setup(admin, tmp_path):
+    import pandas as pd
+
+    pid = admin.post("/api/projects", json={"name": "Translate"}).json()["id"]
+    ziel = tmp_path / "ziel.xlsx"
+    quelle = tmp_path / "quelle.xlsx"
+    pd.DataFrame({"Kabel": ["K1", "K2", "K3", "K4"], "W-Nr": ["W-001", "w 002", "W-003", None],
+                  "Notiz": ["alt", None, "bleibt", "x"]}).to_excel(ziel, index=False)
+    pd.DataFrame({"Nummer": ["W001", "W002", "W002", "W099"], "Ort": ["Halle 1", "Halle 2", "Halle 2b", "Keller"],
+                  "Prio": [1, 2, 3, 4]}).to_excel(quelle, index=False)
+    for path in (ziel, quelle):
+        with path.open("rb") as handle:
+            assert admin.post(f"/api/projects/{pid}/files", files={"file": (path.name, handle)}).status_code == 201
+    ds = admin.post(f"/api/projects/{pid}/datasets", json={"file": "ziel.xlsx"}).json()["id"]
+    return pid, ds
+
+
+def _body(**extra):
+    body = {"source": {"kind": "file", "file": "quelle.xlsx"}, "key_a": "W-Nr", "key_b": "Nummer",
+            "ignore_separators": True,
+            "mappings": [{"source": "Ort", "target": "Standort"}, {"source": "Prio", "target": "Notiz", "mode": "empty"}]}
+    body.update(extra)
+    return body
+
+
+def test_translate_preview_apply_and_export(admin, tmp_path):
+    pid, ds = _translate_setup(admin, tmp_path)
+    src = admin.get(f"/api/datasets/{ds}/translate/sources").json()
+    assert src["files"] == ["quelle.xlsx", "ziel.xlsx"] and src["datasets"] == []
+    info = admin.post(f"/api/datasets/{ds}/translate/source", json={"kind": "file", "file": "quelle.xlsx"}).json()
+    assert info["columns"] == ["Nummer", "Ort", "Prio"] and info["total"] == 4
+
+    pre = admin.post(f"/api/datasets/{ds}/translate/preview", json=_body()).json()
+    stats = pre["stats"]
+    # K1 (W-001) und K2 (w 002) finden einen Treffer, K3 (W-003) nicht, K4 hat keinen Schlüssel
+    assert (stats["matched"], stats["unmatched"], stats["empty_key"], stats["duplicate_keys"]) == (2, 1, 1, 1)
+    assert pre["new_columns"] == ["Standort"] and pre["unmatched_keys"] == ["W-003"]
+    assert stats["changed_cells"] == 3  # Standort K1 und K2, Notiz K2 (war leer; K1 hat "alt" und bleibt)
+
+    excel = admin.post(f"/api/datasets/{ds}/translate/export", json=_body(duplicates="last"))
+    assert excel.status_code == 200 and excel.content[:2] == b"PK"
+    assert admin.get(f"/api/datasets/{ds}").json()["columns"] == ["Kabel", "W-Nr", "Notiz"]  # Export ändert nichts
+
+    done = admin.post(f"/api/datasets/{ds}/translate/apply", json=_body(duplicates="last"))
+    assert done.status_code == 200 and done.json()["new_columns"] == ["Standort"]
+    rows = admin.get(f"/api/datasets/{ds}/rows?since=0").json()
+    by_cable = {r["data"]["Kabel"]: r["data"] for r in rows["rows"]}
+    assert by_cable["K1"]["Standort"] == "Halle 1" and by_cable["K1"]["Notiz"] == "alt"  # "nur leere" lässt "alt" stehen
+    assert by_cable["K2"]["Standort"] == "Halle 2b" and by_cable["K2"]["Notiz"] == 3  # letzter Treffer, Notiz war leer
+    assert by_cable["K3"].get("Standort") is None and by_cable["K3"]["Notiz"] == "bleibt"  # nicht angefasst
+
+
+def test_translate_skip_duplicates_and_validation(admin, tmp_path):
+    _, ds = _translate_setup(admin, tmp_path)
+    pre = admin.post(f"/api/datasets/{ds}/translate/preview", json=_body(duplicates="skip")).json()
+    assert pre["stats"]["ambiguous"] == 1 and pre["stats"]["matched"] == 1
+    bad = admin.post(f"/api/datasets/{ds}/translate/preview", json=_body(key_b="gibtsnicht"))
+    assert bad.status_code == 422
+    clash = admin.post(f"/api/datasets/{ds}/translate/preview",
+                       json=_body(mappings=[{"source": "Ort", "target": "W-Nr"}]))
+    assert clash.status_code == 422
+    missing = admin.post(f"/api/datasets/{ds}/translate/preview", json=_body(source={"kind": "file", "file": "../x.xlsx"}))
+    assert missing.status_code in (400, 404, 422)
+
+
+def test_translate_viewer_cannot_apply(admin, client, tmp_path):
+    pid, ds = _translate_setup(admin, tmp_path)
+    admin.post("/api/admin/users", json={"username": "lese2", "password": "lese-passwort-123", "role": "user"})
+    admin.put(f"/api/projects/{pid}/members", json={"username": "lese2", "role": "viewer"})
+    assert client.post("/api/auth/login", json={"username": "lese2", "password": "lese-passwort-123"}).status_code == 200
+    assert client.post(f"/api/datasets/{ds}/translate/preview", json=_body()).status_code == 200
+    assert client.post(f"/api/datasets/{ds}/translate/apply", json=_body()).status_code == 403

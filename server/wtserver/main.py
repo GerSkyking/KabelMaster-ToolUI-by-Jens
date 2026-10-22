@@ -18,7 +18,7 @@ from wtserver.config import get_settings
 from wtserver.db import SessionLocal, engine
 from wtserver.logging_setup import request_id_var, setup_logging
 from wtserver import backup
-from wtserver.routers import account, auth, backups, conflicts, datasets, notes, overview, projects, share, templates, tools
+from wtserver.routers import account, auth, backups, conflicts, datasets, notes, overview, projects, share, templates, tools, translate
 
 log = logging.getLogger("wtserver")
 settings = get_settings()
@@ -79,7 +79,7 @@ async def request_middleware(request: Request, call_next):
     return response
 
 
-for module in (auth, projects, datasets, notes, conflicts, tools, templates, overview, backups, share, account):
+for module in (auth, projects, datasets, notes, translate, conflicts, tools, templates, overview, backups, share, account):
     app.include_router(module.router)
 
 

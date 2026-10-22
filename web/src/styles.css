@@ -157,3 +157,8 @@ progress { width: 100%; height: 12px; accent-color: var(--accent); }
 .markdown table { border-collapse: collapse; }
 .markdown th, .markdown td { border: 1px solid var(--line); padding: 4px 8px; }
 .markdown li.task { list-style: none; margin-left: -1.2em; }
+
+/* Übersetzer */
+th.keycol, td.keycol { background: var(--sel); }
+td.changed { background: var(--done); }
+.chip.warn { color: var(--warn); border-color: var(--warn); }

@@ -16,7 +16,7 @@ from wtserver.security import current_user
 
 router = APIRouter(prefix="/api/templates", tags=["templates"])
 
-TAB_IDS = {"single_search", "batch_search", "highlight", "kmk", "cabinet", "cable"}
+TAB_IDS = {"single_search", "batch_search", "highlight", "kmk", "cabinet", "cable", "translate"}
 MAX_BYTES = 200_000
 
 
