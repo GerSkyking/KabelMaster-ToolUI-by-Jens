@@ -126,7 +126,10 @@ export function upload<T = unknown>(path: string, form: FormData, onProgress?: (
         return;
       }
       let message = xhr.statusText || `Fehler ${xhr.status}`;
-      if (xhr.status === 413) message = "Datei zu groß (Server- oder Proxy-Limit, z. B. client_max_body_size).";
+      if (xhr.status === 413) {
+        const from = xhr.getResponseHeader("server") ?? "unbekannt";
+        message = `Abgelehnt mit 413 (zu groß) von „${from}“, nicht von der App. Limit dort prüfen, z. B. client_max_body_size.`;
+      }
       try {
         const data = JSON.parse(xhr.responseText);
         message = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail ?? data);
