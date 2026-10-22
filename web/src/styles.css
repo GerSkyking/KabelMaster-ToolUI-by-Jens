@@ -131,3 +131,29 @@ details summary { cursor: pointer; color: var(--muted); }
 .conflicts .value { display: block; font-size: 1.6rem; margin: 4px 0 8px; }
 .upload-inline { cursor: pointer; }
 .brand small { font-weight: 400; opacity: 0.7; }
+
+/* Upload, Notizen */
+.dropzone { margin-top: 10px; padding: 10px; border: 2px dashed var(--line); border-radius: 10px; }
+.dropzone.over { border-color: var(--accent); background: var(--sel); }
+.job { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(120px, 2fr) minmax(120px, 2fr); gap: 10px; align-items: center; padding: 4px 0; }
+progress { width: 100%; height: 12px; accent-color: var(--accent); }
+@media (max-width: 700px) { .job { grid-template-columns: 1fr; } }
+.danger-zone { border-color: var(--error); }
+.notes-layout { display: grid; gap: 12px; }
+@media (min-width: 900px) { .notes-layout { grid-template-columns: minmax(220px, 1fr) 3fr; align-items: start; } }
+.note-list { max-height: 460px; overflow: auto; }
+.note-item { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+.note-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.85rem; }
+.note-editor { display: grid; gap: 8px; }
+.note-split { display: grid; gap: 12px; }
+@media (min-width: 1100px) { .note-split { grid-template-columns: 1fr 1fr; } }
+.note-editor textarea { width: 100%; font: 0.95rem/1.45 ui-monospace, Consolas, monospace; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px; resize: vertical; }
+.markdown { min-width: 0; overflow-wrap: anywhere; }
+.markdown h1, .markdown h2, .markdown h3 { margin: 0.8em 0 0.3em; }
+.markdown p, .markdown ul, .markdown ol, .markdown pre, .markdown table, .markdown blockquote { margin: 0.5em 0; }
+.markdown pre { background: var(--line); padding: 10px; border-radius: 8px; overflow: auto; }
+.markdown pre code { background: none; padding: 0; }
+.markdown blockquote { border-left: 3px solid var(--accent); padding-left: 10px; color: var(--muted); }
+.markdown table { border-collapse: collapse; }
+.markdown th, .markdown td { border: 1px solid var(--line); padding: 4px 8px; }
+.markdown li.task { list-style: none; margin-left: -1.2em; }

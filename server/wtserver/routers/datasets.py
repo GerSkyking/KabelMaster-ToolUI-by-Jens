@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
 from core.cable.cable_analysis import CableColumns, analyze
@@ -15,7 +15,7 @@ from core.io.excel_reader import ExcelImportError
 from wtserver import audit, tabular
 from wtserver.config import Settings, get_settings
 from wtserver.db import get_db
-from wtserver.models import Dataset, Row, ShareLink, User, utcnow
+from wtserver.models import Dataset, Row, ShareLink, User, purge_datasets, utcnow
 from wtserver.routers.projects import project_file
 from wtserver.security import current_user, get_dataset, get_project, new_share_token, project_role
 from wtserver.sync import SyncRequest, apply_ops, row_out, rows_since
@@ -77,10 +77,12 @@ def import_dataset(
     db.add(dataset)
     db.flush()
     project.seq += 1
-    db.add_all(
-        Row(dataset_id=dataset.id, idx=i, data=row, rev=1, seq=project.seq, updated_by=user.username)
+    now = utcnow()
+    db.execute(insert(Row), [  # ein Bulk-INSERT statt tausender Einzelobjekte
+        {"dataset_id": dataset.id, "idx": i, "data": row, "rev": 1, "seq": project.seq, "deleted": False,
+         "updated_at": now, "updated_by": user.username}
         for i, row in enumerate(rows)
-    )
+    ])
     audit.record(db, request, "dataset_imported", user, f"dataset:{dataset.id}", {"file": path.name, "rows": len(rows)})
     db.commit()
     return dataset_out(db, user, dataset)
@@ -117,6 +119,7 @@ def delete_dataset(
 ) -> None:
     dataset = get_dataset(db, user, dataset_id, "owner")
     audit.record(db, request, "dataset_deleted", user, f"dataset:{dataset.id}", {"name": dataset.name})
+    purge_datasets(db, [dataset.id])
     db.delete(dataset)
     db.commit()
 

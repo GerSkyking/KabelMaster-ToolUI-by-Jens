@@ -105,3 +105,36 @@ export function saveBlob({ blob, filename }: Pick<Fetched, "blob" | "filename">)
 }
 
 export const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** Datei-Upload mit Fortschritt (fetch kann das nicht). ``onProgress`` bekommt gesendete und gesamte Bytes. */
+export function upload<T = unknown>(path: string, form: FormData, onProgress?: (loaded: number, total: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path);
+    xhr.timeout = 30 * 60_000;
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded, e.total);
+    xhr.onerror = () => reject(new OfflineError());
+    xhr.ontimeout = () => reject(new ApiError(0, "Zeitüberschreitung beim Hochladen."));
+    xhr.onload = () => {
+      if (xhr.status === 401) unauthorizedListeners.forEach((fn) => fn());
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as T);
+        } catch {
+          resolve(undefined as T);
+        }
+        return;
+      }
+      let message = xhr.statusText || `Fehler ${xhr.status}`;
+      if (xhr.status === 413) message = "Datei zu groß (Server- oder Proxy-Limit, z. B. client_max_body_size).";
+      try {
+        const data = JSON.parse(xhr.responseText);
+        message = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail ?? data);
+      } catch {
+        /* keine JSON-Antwort (z. B. Fehlerseite des Proxys) */
+      }
+      reject(new ApiError(xhr.status, message));
+    };
+    xhr.send(form);
+  });
+}

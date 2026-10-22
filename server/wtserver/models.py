@@ -48,6 +48,7 @@ class Project(Base):
 
     members: Mapped[list["ProjectMember"]] = relationship(cascade="all, delete-orphan", back_populates="project")
     datasets: Mapped[list["Dataset"]] = relationship(cascade="all, delete-orphan", back_populates="project")
+    notes: Mapped[list["Note"]] = relationship(cascade="all, delete-orphan", order_by="Note.updated_at.desc()")
 
 
 class ProjectMember(Base):
@@ -61,6 +62,21 @@ class ProjectMember(Base):
 
     project: Mapped[Project] = relationship(back_populates="members")
     user: Mapped[User] = relationship()
+
+
+class Note(Base):
+    """Notiz im Markdown-Format; gehört zu einem Projekt. ``version`` verhindert stilles Überschreiben."""
+    __tablename__ = "notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(150), default="")
+    updated_by: Mapped[str] = mapped_column(String(150), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class Dataset(Base):
@@ -161,6 +177,16 @@ class ExportRun(Base):
     # je Ziel: "" offen, sonst Datum TT.MM.JJ der Markierung
     status: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
     note: Mapped[str] = mapped_column(String(255), default="")
+
+
+def purge_datasets(db, dataset_ids: list[int]) -> None:
+    """Löscht alles, was an Datensätzen hängt, mit je einem DELETE (statt jede Zeile einzeln zu laden)."""
+    from sqlalchemy import delete
+
+    if not dataset_ids:
+        return
+    for model in (Row, RowChange, Conflict, ExportRun, ShareLink):
+        db.execute(delete(model).where(model.dataset_id.in_(dataset_ids)))
 
 
 class Backup(Base):

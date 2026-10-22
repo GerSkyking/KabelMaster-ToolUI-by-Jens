@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from wtserver import audit
 from wtserver.config import Settings, get_settings
 from wtserver.db import get_db
-from wtserver.models import Dataset, Project, ProjectMember, User
+from wtserver.models import Dataset, Project, ProjectMember, User, purge_datasets
 from wtserver.security import PROJECT_RANK, current_user, get_project, project_role
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -128,6 +128,7 @@ def delete_project(
     """Entfernt Projekt, Datensätze und Zeilen aus der Datenbank. Dateien im Arbeitsverzeichnis bleiben erhalten."""
     project = get_project(db, user, project_id, "owner")
     audit.record(db, request, "project_deleted", user, f"project:{project.id}", {"slug": project.slug})
+    purge_datasets(db, [d.id for d in project.datasets])
     db.delete(project)
     db.commit()
 

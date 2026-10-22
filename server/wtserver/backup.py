@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from wtserver.config import Settings
-from wtserver.models import Backup, Dataset, Project, ProjectMember, Row, Template, User, utcnow
+from wtserver.models import Backup, Dataset, Note, Project, ProjectMember, Row, Template, User, utcnow
 
 log = logging.getLogger("wtserver.backup")
 FORMAT_VERSION = 1
@@ -47,7 +47,8 @@ def snapshot(db: Session, project_ids: list[int] | None = None) -> dict[str, Any
                              "settings": dataset.settings,
                              "rows": [{"idx": r.idx, "data": r.data} for r in rows]})
         projects.append({"slug": project.slug, "name": project.name, "description": project.description,
-                         "members": [{"username": u, "role": r} for u, r in members], "datasets": datasets})
+                         "members": [{"username": u, "role": r} for u, r in members], "datasets": datasets,
+                         "notes": [{"title": n.title, "body": n.body, "by": n.updated_by} for n in project.notes]})
     templates = [{"owner": t.owner_name, "tab_id": t.tab_id, "name": t.name, "data": t.data}
                  for t in db.scalars(select(Template).order_by(Template.id))] if project_ids is None else []
     return {"projects": projects, "templates": templates}
@@ -56,7 +57,8 @@ def snapshot(db: Session, project_ids: list[int] | None = None) -> dict[str, Any
 def summarize(data: dict[str, Any]) -> dict[str, Any]:
     datasets = [d for p in data["projects"] for d in p["datasets"]]
     return {"projects": len(data["projects"]), "datasets": len(datasets),
-            "rows": sum(len(d["rows"]) for d in datasets), "templates": len(data.get("templates", []))}
+            "rows": sum(len(d["rows"]) for d in datasets), "templates": len(data.get("templates", [])),
+            "notes": sum(len(p.get("notes", [])) for p in data["projects"])}
 
 
 def create_backup(db: Session, settings: Settings, kind: str, actor: str, include_files: bool | None = None,
@@ -192,6 +194,11 @@ def restore_project(db: Session, settings: Settings, data: dict[str, Any], slug:
                    for r in item["rows"])
         restored += len(item["rows"])
     project.seq = seq
+    have = {(n.title, n.body) for n in project.notes}
+    for note in saved.get("notes", []):  # nur fehlende Notizen zurückholen, vorhandene bleiben unangetastet
+        if (note["title"], note["body"]) not in have:
+            project.notes.append(Note(title=note["title"], body=note["body"], created_by=note.get("by", ""),
+                                      updated_by=note.get("by", "")))
     if archive_path is not None:
         with ZipFile(archive_path) as archive:
             for name in archive.namelist():

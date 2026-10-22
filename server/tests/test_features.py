@@ -232,3 +232,56 @@ def test_overview_forecast_and_report(admin, dataset):
     assert "Tagesbericht" in txt.headers["content-disposition"]
     assert admin.get(f"/api/projects/{dataset['project_id']}/report.txt").status_code == 200
     assert admin.get(f"/api/datasets/{dataset['id']}/report.txt", params={"start": "bad"}).status_code == 422
+
+
+# ---- Notizen, Löschen ----
+
+def _project(admin) -> int:
+    return admin.post("/api/projects", json={"name": "Notizen-Test"}).json()["id"]
+
+
+def test_notes_crud_and_version_conflict(admin):
+    pid = _project(admin)
+    created = admin.post(f"/api/projects/{pid}/notes", json={"title": "Plan", "body": "# Hallo\n- a"})
+    assert created.status_code == 201 and created.json()["version"] == 1
+    nid = created.json()["id"]
+    listing = admin.get(f"/api/projects/{pid}/notes").json()
+    assert listing[0]["title"] == "Plan" and "body" not in listing[0] and listing[0]["preview"].startswith("# Hallo")
+    saved = admin.put(f"/api/projects/{pid}/notes/{nid}", json={"title": "Plan", "body": "neu", "version": 1})
+    assert saved.json()["version"] == 2 and saved.json()["body"] == "neu"
+    stale = admin.put(f"/api/projects/{pid}/notes/{nid}", json={"title": "Plan", "body": "alt", "version": 1})
+    assert stale.status_code == 409
+    assert admin.delete(f"/api/projects/{pid}/notes/{nid}").status_code == 204
+    assert admin.get(f"/api/projects/{pid}/notes").json() == []
+
+
+def test_notes_viewer_cannot_write(admin, client):
+    pid = _project(admin)
+    admin.post("/api/admin/users", json={"username": "lese", "password": "lese-passwort-123", "role": "user"})
+    admin.put(f"/api/projects/{pid}/members", json={"username": "lese", "role": "viewer"})
+    note = admin.post(f"/api/projects/{pid}/notes", json={"title": "x", "body": "y"}).json()
+    assert client.post("/api/auth/login", json={"username": "lese", "password": "lese-passwort-123"}).status_code == 200
+    assert client.get(f"/api/projects/{pid}/notes/{note['id']}").status_code == 200
+    assert client.post(f"/api/projects/{pid}/notes", json={"title": "z"}).status_code == 403
+    assert client.delete(f"/api/projects/{pid}/notes/{note['id']}").status_code == 403
+
+
+def test_delete_project_removes_everything(admin, tmp_path):
+    from sqlalchemy import func, select
+
+    from wtserver.db import SessionLocal
+    from wtserver.models import Note, Row
+
+    pid = _project(admin)
+    admin.post(f"/api/projects/{pid}/notes", json={"title": "n"})
+    import pandas as pd
+    path = tmp_path / "l.xlsx"
+    pd.DataFrame({"A": [1, 2, 3]}).to_excel(path, index=False)
+    with path.open("rb") as handle:
+        assert admin.post(f"/api/projects/{pid}/files", files={"file": ("l.xlsx", handle)}).status_code == 201
+    assert admin.post(f"/api/projects/{pid}/datasets", json={"file": "l.xlsx"}).status_code == 201
+    assert admin.delete(f"/api/projects/{pid}").status_code == 204
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(Row)) == 0
+        assert db.scalar(select(func.count()).select_from(Note)) == 0
+    assert admin.get("/api/projects").json() == []
