@@ -1,0 +1,79 @@
+# UW Kabel-Master ToolUI by Jens - Stack
+#
+#   Start (App + Datenbank):            docker compose up -d --build
+#   Mit mitgeliefertem nginx:           docker compose --profile proxy up -d --build
+#
+# Alle Daten liegen unter DATA_ROOT (.env, Standard ./data) und überstehen Updates und Neuaufbau der Container:
+#   DATA_ROOT/postgres   Datenbank
+#   DATA_ROOT/app/projects/<projekt>/files   Arbeitsverzeichnisse (Excel-Dateien, Papierkorb)
+#   DATA_ROOT/app/backups                    Sicherungen (ZIP)
+#   DATA_ROOT/app/logs                       Logdateien
+# Die Konfiguration liegt in .env (nicht im Repo). Update: git pull && docker compose up -d --build
+#
+# Wenn du bereits einen eigenen Reverse Proxy betreibst, brauchst du das Profil "proxy" nicht: leite
+# dort auf APP_BIND:APP_PORT (Standard 127.0.0.1:8000) weiter. Vorlage: deploy/nginx/external-proxy.conf
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-wtlisten}
+      POSTGRES_USER: ${POSTGRES_USER:-wtlisten}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD in .env setzen}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ${DATA_ROOT:-./data}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Legt die Unterordner an und gibt sie dem App-Benutzer (uid 10001); läuft einmal je Start und endet wieder.
+  init:
+    image: alpine:3.20
+    user: root
+    restart: "no"
+    command: sh -c "mkdir -p /data/projects /data/backups /data/logs && chown -R 10001:10001 /data"
+    volumes:
+      - ${DATA_ROOT:-./data}/app:/data
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wt-listentool:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-wtlisten}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-wtlisten}
+      DATA_DIR: /data
+    volumes:
+      - ${DATA_ROOT:-./data}/app:/data
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8000}:8000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  proxy:
+    profiles: ["proxy"]
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "${PROXY_HTTP_PORT:-80}:80"
+      - "${PROXY_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro   # fullchain.pem + privkey.pem für HTTPS (optional)
