@@ -270,7 +270,8 @@ export function TemplateBar({ tabId, config, columns, onApply }: { tabId: string
   };
 
   return (
-    <section className="card templates">
+    <details className="card templates">
+      <summary>Vorlagen laden und speichern</summary>
       <div className="inline-form">
         <label>Vorlage
           <select value={selected} onChange={(e) => setSelected(e.target.value)}>
@@ -287,7 +288,7 @@ export function TemplateBar({ tabId, config, columns, onApply }: { tabId: string
         <label className="upload-inline">JSON-Import<input type="file" accept=".json" onChange={(e) => { importJson(e.target.files?.[0]); e.target.value = ""; }} /></label>
       </div>
       {message && <p className="muted">{message}</p>}
-    </section>
+    </details>
   );
 }
 

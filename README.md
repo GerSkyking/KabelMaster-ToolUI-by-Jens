@@ -68,10 +68,38 @@ Links, Löschen). Administratoren sehen alle Projekte.
 ## Reiter einer Liste
 
 Jede importierte Liste hat dieselben Reiter wie die Desktop-App:
-**Kabelzug · Einzelsuche · Stapelsuche · Farbmarkierung · KMK · Schrank-Erkennung · Übersicht · Konflikte**.
+**Kabelzug · Einzelsuche · Stapelsuche · Farbmarkierung · KMK · Schrank-Erkennung · Übersetzer · Übersicht · Konflikte · Verlauf**.
 Kabelzug arbeitet auch offline; Suche, Farbmarkierung, KMK und Schrank-Erkennung rechnen auf dem Server (dieselbe Logik wie am
 Desktop, erzeugen Excel/PDF) und brauchen deshalb eine Verbindung. Vor jeder Vorschau/jedem Export werden lokale Änderungen übertragen.
 Kopfzeile/Dateiname (Datum, Ersteller, Firma, Projekt, Ort) stellst du je Reiter unter „Kopfzeile und Dateiname“ ein.
+
+### Verlauf, Rückgängig, Notizen, Hilfe
+
+Der Reiter *Verlauf* zeigt alle Änderungen einer Liste (wer, wann, alt → neu). Einzelne Werte oder ein ganzer Übersetzer-Lauf lassen sich zurücksetzen;
+das geht nur, solange der Wert seither nicht erneut geändert wurde (sonst Hinweis, kein Überschreiben). Notizen im Projekt: Aufgaben-Häkchen sind in der Ansicht anklickbar.
+Projektseite: Listen umbenennen, Name/Beschreibung ändern, Sprungleiste. Unter *Hilfe* (Kopfzeile) steht eine Kurzanleitung. Die Datenbank-Migration 0004 läuft beim Start automatisch.
+
+### Einkauf/Packliste, Whiteboard, Kalender, Tagesbericht
+- **Einkauf** (`/shop`): globaler Artikelkatalog (Name, Artikelnummer, Kategorie, Einheit, Bild bis 3 MB; PNG/JPEG/GIF/WebP, kein SVG, abgelegt unter `DATA_DIR/catalog`).
+  Aus dem Katalog oder per Freitext kommt ein Bedarf (mitbringen/prüfen, Menge, Projekt, Datum) auf die Packliste. Je Eintrag zwei Häkchen *gepackt* und *erledigt*, jeweils mit Name und Zeit.
+  Erledigte Einträge bilden das Archiv mit Auswertung (je Artikel, Monat, Person, Projekt) und Excel-Export. Ansicht als Liste oder mit Bildern. Lesende Projektmitglieder sehen nur; „ohne Projekt“ dürfen alle bearbeiten.
+- **Whiteboard** (`/board`, `/projects/<id>/board`): verschiebbare Haftnotizen, je Projekt oder gemeinsam; Abgleich per Abfrage alle 5 s (keine Echtzeit-Verbindung).
+- **Kalender** (`/schedule`): Phasen, Termine, Urlaub, Meilensteine; externe Kalender per ICS-Link (Server holt sie ab, Cache 6 h, nur http(s); Adressen im internen Netz sind
+  gesperrt, außer `CALENDAR_ALLOW_PRIVATE=true`). Unterstützt Datum/Uhrzeit, ganztägig, einfache Wiederholungen (täglich/wöchentlich/monatlich/jährlich); komplexe Regeln und Einzel-Ausnahmen nicht.
+- **Tagesbericht** (`/worklog`): persönliche Einträge je Projekt (nur für den Autor sichtbar), Auswertung nach Tag/Woche/Monat/Jahr inklusive Zahl der eigenen Listen-Änderungen, Excel-Export.
+  Zeitzone der Auswertung: `TIMEZONE` (Standard Europe/Berlin). Neue Tabellen legt die Migration 0005 beim Start an.
+
+### Übersetzer und Excel-Mappen mit mehreren Blättern
+
+Der Reiter *Übersetzer* trägt Werte aus einer zweiten Tabelle (andere Liste oder Datei im Arbeitsverzeichnis, bei Mappen mit Blattwahl)
+anhand einer Schlüsselspalte (z. B. W-Nummer) in die Liste ein. Du ordnest Spalten der Quelle Spalten der Liste zu (oder neuen Spalten),
+wählst je Zuordnung „überschreiben“ oder „nur leere füllen“ und siehst vorher in der Vorschau jede Änderung. Nicht zugeordnete Spalten
+bleiben unberührt. Ergebnis: auf die Liste anwenden oder als Excel herunterladen.
+
+Hat eine Excel-Datei mehrere Blätter, fragt der Import: **alle Blätter zu einer Liste** (zusätzliche Spalte „Blatt“, Spalten aller Blätter
+vereint), nur ein Blatt oder nur das erste. Bei der zusammengefassten Liste trägt der Übersetzer auf Wunsch nur in bestimmte Blätter ein,
+und der Excel-Export erzeugt wieder eine **Mappe mit denselben Blättern** (je Blatt die ursprünglichen Spalten plus neue Spalten, die
+dort Werte haben).
 
 ### Kabelzug
 

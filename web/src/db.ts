@@ -5,6 +5,7 @@ import type { Mapping } from "./cable";
 export interface DatasetState {
   key: string; // "ds:<id>" oder "share:<token>"
   id: number;
+  projectId?: number;
   name: string;
   columns: string[];
   settings: { mapping?: Mapping; ignore_short?: boolean; min_length?: number; auto_date?: boolean };

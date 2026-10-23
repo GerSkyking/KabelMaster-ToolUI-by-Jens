@@ -361,3 +361,111 @@ def test_translate_viewer_cannot_apply(admin, client, tmp_path):
     assert client.post("/api/auth/login", json={"username": "lese2", "password": "lese-passwort-123"}).status_code == 200
     assert client.post(f"/api/datasets/{ds}/translate/preview", json=_body()).status_code == 200
     assert client.post(f"/api/datasets/{ds}/translate/apply", json=_body()).status_code == 403
+
+
+# ---- Mehrere Blätter ----
+
+def _workbook(admin, tmp_path):
+    import pandas as pd
+
+    pid = admin.post("/api/projects", json={"name": "Mappe"}).json()["id"]
+    path = tmp_path / "mappe.xlsx"
+    with pd.ExcelWriter(path) as writer:
+        pd.DataFrame({"Kabel": ["A1", "A2"], "W-Nr": ["W-001", "W-002"]}).to_excel(writer, sheet_name="Halle", index=False)
+        pd.DataFrame({"Zeile": ["B1", "B2", "B3"], "W-Nr": ["W-002", "W-003", "W-001"], "Extra": [1, 2, 3]}).to_excel(
+            writer, sheet_name="Keller", index=False)
+        pd.DataFrame().to_excel(writer, sheet_name="Leer", index=False)
+    quelle = tmp_path / "quelle2.xlsx"
+    pd.DataFrame({"Nummer": ["W001", "W002", "W003"], "Ort": ["O1", "O2", "O3"]}).to_excel(quelle, index=False)
+    for p in (path, quelle):
+        with p.open("rb") as handle:
+            assert admin.post(f"/api/projects/{pid}/files", files={"file": (p.name, handle)}).status_code == 201
+    return pid
+
+
+def test_import_all_sheets_and_export_workbook(admin, tmp_path):
+    import io
+
+    import pandas as pd
+
+    pid = _workbook(admin, tmp_path)
+    assert admin.get(f"/api/projects/{pid}/files/mappe.xlsx/sheets").json()["sheets"] == ["Halle", "Keller", "Leer"]
+    ds = admin.post(f"/api/projects/{pid}/datasets", json={"file": "mappe.xlsx", "mode": "all"})
+    assert ds.status_code == 201
+    meta = ds.json()
+    assert meta["columns"] == ["Blatt", "Kabel", "W-Nr", "Zeile", "Extra"]
+    assert [s["name"] for s in meta["settings"]["sheets"]] == ["Halle", "Keller"]  # leeres Blatt entfällt
+    rows = admin.get(f"/api/datasets/{meta['id']}/rows?since=0").json()["rows"]
+    assert [r["data"]["Blatt"] for r in rows] == ["Halle", "Halle", "Keller", "Keller", "Keller"]
+
+    # Übersetzer nur im Blatt „Keller“, neue Spalte; Export liefert wieder zwei Blätter
+    body = {"source": {"kind": "file", "file": "quelle2.xlsx"}, "key_a": "W-Nr", "key_b": "Nummer",
+            "ignore_separators": True, "sheets": ["Keller"], "mappings": [{"source": "Ort", "target": "Standort"}]}
+    pre = admin.post(f"/api/datasets/{meta['id']}/translate/preview", json=body).json()
+    assert pre["stats"]["rows"] == 3 and pre["stats"]["matched"] == 3 and pre["stats"]["changed_cells"] == 3
+    assert admin.post(f"/api/datasets/{meta['id']}/translate/apply", json=body).status_code == 200
+    export = admin.get(f"/api/datasets/{meta['id']}/export")
+    workbook = pd.read_excel(io.BytesIO(export.content), sheet_name=None)
+    assert list(workbook) == ["Halle", "Keller"]
+    assert list(workbook["Halle"].columns) == ["Kabel", "W-Nr"]  # Halle unberührt, keine neue Spalte
+    assert list(workbook["Keller"].columns) == ["Zeile", "W-Nr", "Extra", "Standort"]
+    assert list(workbook["Keller"]["Standort"]) == ["O2", "O3", "O1"]
+
+
+def test_import_single_sheet_and_source_sheet(admin, tmp_path):
+    pid = _workbook(admin, tmp_path)
+    ds = admin.post(f"/api/projects/{pid}/datasets", json={"file": "mappe.xlsx", "mode": "sheet", "sheet": "Keller"}).json()
+    assert ds["columns"] == ["Zeile", "W-Nr", "Extra"] and ds["name"] == "mappe - Keller" and ds["settings"] == {}
+    first = admin.post(f"/api/projects/{pid}/datasets", json={"file": "mappe.xlsx"}).json()
+    assert first["columns"] == ["Kabel", "W-Nr"]  # Standard: erstes Blatt wie bisher
+    info = admin.post(f"/api/datasets/{first['id']}/translate/source", json={"kind": "file", "file": "mappe.xlsx", "sheet": "Keller"}).json()
+    assert info["columns"] == ["Zeile", "W-Nr", "Extra"] and info["sheets"] == ["Halle", "Keller", "Leer"]
+
+
+def test_csv_source(admin, tmp_path):
+    pid = admin.post("/api/projects", json={"name": "Csv"}).json()["id"]
+    csv = tmp_path / "q.csv"
+    csv.write_text("Nummer;Ort\nW1;Köln\nW2;Bonn\n", encoding="cp1252")
+    with csv.open("rb") as handle:
+        assert admin.post(f"/api/projects/{pid}/files", files={"file": ("q.csv", handle)}).status_code == 201
+    ds = admin.post(f"/api/projects/{pid}/datasets", json={"file": "q.csv"})
+    assert ds.status_code == 201 and ds.json()["columns"] == ["Nummer", "Ort"]
+
+
+# ---- Verlauf und Rückgängig ----
+
+def test_history_and_undo_translate_run(admin, tmp_path):
+    pid, ds = _translate_setup(admin, tmp_path)
+    done = admin.post(f"/api/datasets/{ds}/translate/apply", json=_body()).json()
+    batch = done["batch"]
+    history = admin.get(f"/api/datasets/{ds}/history").json()
+    mine = [c for c in history["changes"] if c["batch"] == batch]
+    assert len(mine) == 3 and {c["kind"] for c in mine} == {"translate"} and history["undone"] == []
+    assert mine[0]["label"].startswith("K")
+
+    # K1 danach von Hand ändern: dieser Wert darf beim Rückgängig nicht überschrieben werden
+    rows = admin.get(f"/api/datasets/{ds}/rows?since=0").json()["rows"]
+    k1 = next(r for r in rows if r["data"]["Kabel"] == "K1")
+    sync = admin.post(f"/api/datasets/{ds}/sync", json={"ops": [
+        {"id": k1["id"], "base_rev": k1["rev"], "patch": {"Standort": "von Hand"}, "base": {"Standort": "Halle 1"}}]})
+    assert sync.status_code == 200
+    undo = admin.post(f"/api/datasets/{ds}/history/batches/{batch}/undo").json()
+    assert undo["cells"] == 2 and undo["skipped"] == 1
+    rows = {r["data"]["Kabel"]: r["data"] for r in admin.get(f"/api/datasets/{ds}/rows?since=0").json()["rows"]}
+    assert rows["K1"]["Standort"] == "von Hand"          # neuer als der Lauf: bleibt
+    assert rows["K2"].get("Standort") in (None, "") and rows["K2"].get("Notiz") in (None, "")
+    assert admin.get(f"/api/datasets/{ds}/history").json()["undone"] == [batch]
+    assert admin.post(f"/api/datasets/{ds}/history/batches/{batch}/undo").status_code == 409
+
+
+def test_revert_single_change(admin, tmp_path):
+    _, ds = _translate_setup(admin, tmp_path)
+    rows = admin.get(f"/api/datasets/{ds}/rows?since=0").json()["rows"]
+    k3 = next(r for r in rows if r["data"]["Kabel"] == "K3")
+    admin.post(f"/api/datasets/{ds}/sync", json={"ops": [
+        {"id": k3["id"], "base_rev": k3["rev"], "patch": {"Notiz": "neu"}, "base": {"Notiz": "bleibt"}}]})
+    change = admin.get(f"/api/datasets/{ds}/history").json()["changes"][0]
+    assert (change["field"], change["old"], change["new"]) == ("Notiz", "bleibt", "neu")
+    assert admin.post(f"/api/datasets/{ds}/history/changes/{change['id']}/revert").status_code == 200
+    again = admin.post(f"/api/datasets/{ds}/history/changes/{change['id']}/revert")
+    assert again.status_code == 409  # Wert ist schon zurückgesetzt

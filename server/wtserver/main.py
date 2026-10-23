@@ -18,7 +18,7 @@ from wtserver.config import get_settings
 from wtserver.db import SessionLocal, engine
 from wtserver.logging_setup import request_id_var, setup_logging
 from wtserver import backup
-from wtserver.routers import account, auth, backups, conflicts, datasets, notes, overview, projects, share, templates, tools, translate
+from wtserver.routers import account, auth, backups, board, conflicts, datasets, history, notes, overview, projects, schedule, share, shop, templates, tools, translate, worklog
 
 log = logging.getLogger("wtserver")
 settings = get_settings()
@@ -74,12 +74,12 @@ async def request_middleware(request: Request, call_next):
     if not request.url.path.startswith("/api/docs"):
         response.headers["Content-Security-Policy"] = _CSP
     if request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store"
+        response.headers.setdefault("Cache-Control", "no-store")
     request_id_var.reset(token)
     return response
 
 
-for module in (auth, projects, datasets, notes, translate, conflicts, tools, templates, overview, backups, share, account):
+for module in (auth, projects, datasets, history, notes, translate, conflicts, tools, templates, overview, backups, share, account, shop, board, worklog, schedule):
     app.include_router(module.router)
 
 

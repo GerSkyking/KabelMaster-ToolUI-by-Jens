@@ -1,6 +1,7 @@
 """Übersetzer-Reiter: Quelle wählen (andere Liste oder Datei des Projekts), Vorschau, Anwenden, Excel-Download."""
 from __future__ import annotations
 
+import uuid
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -29,6 +30,7 @@ class SourceRef(BaseModel):
     kind: Literal["dataset", "file"]
     dataset_id: int | None = None
     file: str = ""
+    sheet: str = ""  # Blatt der Quelldatei; leer = erstes Blatt
 
 
 class MappingIn(BaseModel):
@@ -45,6 +47,7 @@ class TranslateIn(BaseModel):
     ignore_separators: bool = False
     duplicates: Literal["first", "last", "skip"] = "first"
     mappings: list[MappingIn] = Field(default_factory=list, max_length=100)
+    sheets: list[str] | None = None  # nur Zeilen dieser Blätter bearbeiten (Liste aus mehreren Blättern); None = alle
 
 
 def _load_source(db: Session, user: User, dataset: Dataset, ref: SourceRef, settings: Settings):
@@ -57,10 +60,10 @@ def _load_source(db: Session, user: User, dataset: Dataset, ref: SourceRef, sett
     if path.suffix.lower() not in SOURCE_FILES or not path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Quelldatei nicht gefunden (erlaubt: .xlsx, .xls, .csv).")
     stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    key = (str(path), stat.st_mtime_ns, stat.st_size, ref.sheet)
     if key not in _cache:
         try:
-            _cache[key] = tabular.read_rows(path)
+            _cache[key] = tabular.read_rows(path, ref.sheet or None)
         except ExcelImportError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
         while len(_cache) > 4:
@@ -84,7 +87,12 @@ def _plan(db: Session, user: User, dataset: Dataset, body: TranslateIn, settings
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     rows_a = [(r.id, r.data) for r in db.scalars(
         select(Row).where(Row.dataset_id == dataset.id, Row.deleted.is_(False)).order_by(Row.idx, Row.id))]
-    return rows_a, translate.make_plan(rows_a, list(dataset.columns), rows_b, options)
+    target_rows = rows_a
+    if body.sheets is not None and dataset.settings.get("sheets"):
+        sheet_column = dataset.settings.get("sheet_column", tabular.SHEET_COLUMN)
+        wanted = set(body.sheets)
+        target_rows = [(rid, data) for rid, data in rows_a if data.get(sheet_column) in wanted]
+    return rows_a, translate.make_plan(target_rows, list(dataset.columns), rows_b, options)
 
 
 @router.get("/sources")
@@ -110,7 +118,13 @@ def source_info(
     """Spalten und erste Zeilen der Quelle, damit man den Schlüssel (z. B. die W-Nummern) dort sehen kann."""
     dataset = get_dataset(db, user, dataset_id)
     columns, rows = _load_source(db, user, dataset, ref, settings)
-    return {"columns": columns, "total": len(rows),
+    sheets: list[str] = []
+    if ref.kind == "file":
+        try:
+            sheets = tabular.sheet_names(project_file(settings, dataset.project, ref.file))
+        except Exception:  # noqa: BLE001 - die Blattliste ist nur eine Hilfe, Fehler erscheinen schon beim Laden
+            sheets = []
+    return {"columns": columns, "total": len(rows), "sheets": sheets,
             "rows": [[row.get(c) for c in columns] for row in rows[:SOURCE_PREVIEW_ROWS]]}
 
 
@@ -135,12 +149,13 @@ def apply(
     if plan.new_columns:
         dataset.columns = [*dataset.columns, *plan.new_columns]
         dataset.project.seq += 1  # Clients erkennen so die geänderte Spaltenliste
-    touched = apply_values(db, dataset, plan.changes, user.username, kind="translate")
+    batch = uuid.uuid4().hex[:12]
+    touched = apply_values(db, dataset, plan.changes, user.username, kind="translate", batch=batch)
     audit.record(db, request, "translate_applied", user, f"dataset:{dataset.id}",
                  {"rows": touched, "cells": plan.stats["changed_cells"], "new_columns": plan.new_columns,
-                  "source": body.source.model_dump()})
+                  "source": body.source.model_dump(), "batch": batch})
     db.commit()
-    return {"changed_rows": touched, "changed_cells": plan.stats["changed_cells"], "new_columns": plan.new_columns,
+    return {"batch": batch, "changed_rows": touched, "changed_cells": plan.stats["changed_cells"], "new_columns": plan.new_columns,
             "stats": plan.stats}
 
 
@@ -155,5 +170,5 @@ def export(
     columns, rows = translate.apply_to_rows(rows_a, list(dataset.columns), plan)
     name = f"{dataset.name}_uebersetzt.xlsx"
     return Response(
-        tabular.to_xlsx_bytes(columns, rows), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        tabular.to_workbook_bytes(columns, rows, dataset.name, dataset.settings), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})

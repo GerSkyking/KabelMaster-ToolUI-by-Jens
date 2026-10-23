@@ -24,7 +24,7 @@ function inline(text: string): string {
 const isTableRule = (line: string) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
 const cells = (line: string) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
 
-export function renderMarkdown(source: string): string {
+export function renderMarkdown(source: string, lineOffset = 0): string {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const out: string[] = [];
   let i = 0;
@@ -56,8 +56,9 @@ export function renderMarkdown(source: string): string {
     }
     if (/^>\s?/.test(line)) {
       const quote: string[] = [];
+      const start = i;
       while (i < lines.length && /^>\s?/.test(lines[i])) quote.push(lines[i++].replace(/^>\s?/, ""));
-      out.push(`<blockquote>${renderMarkdown(quote.join("\n"))}</blockquote>`);
+      out.push(`<blockquote>${renderMarkdown(quote.join("\n"), lineOffset + start)}</blockquote>`);
       continue;
     }
     if (line.includes("|") && i + 1 < lines.length && isTableRule(lines[i + 1]) && lines[i + 1].includes("-")) {
@@ -82,7 +83,7 @@ export function renderMarkdown(source: string): string {
         const task = /^\[([ xX])\]\s+(.*)$/.exec(m[3]);
         items.push(
           task
-            ? `<li class="task">${task[1] === " " ? "☐" : "☑"} ${inline(task[2])}</li>`
+            ? `<li class="task" data-line="${lineOffset + i}">${task[1] === " " ? "☐" : "☑"} ${inline(task[2])}</li>`
             : `<li>${inline(m[3])}</li>`,
         );
         i++;
@@ -98,4 +99,12 @@ export function renderMarkdown(source: string): string {
     out.push(`<p>${paragraph.map(inline).join("<br>")}</p>`);
   }
   return out.join("\n");
+}
+
+/** Schaltet das Häkchen einer Aufgabe (`- [ ]` / `- [x]`) in der angegebenen Zeile um. */
+export function toggleTask(source: string, line: number): string {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  if (line < 0 || line >= lines.length) return source;
+  lines[line] = lines[line].replace(/\[( |x|X)\]/, (_, mark: string) => (mark === " " ? "[x]" : "[ ]"));
+  return lines.join("\n");
 }

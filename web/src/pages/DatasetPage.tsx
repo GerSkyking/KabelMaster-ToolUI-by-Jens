@@ -7,6 +7,7 @@ import { DatasetState, getDb } from "../db";
 import { datasetBackend } from "../sync";
 import { CabinetTool } from "../tools/CabinetTool";
 import { ConflictsTab } from "../tools/ConflictsTab";
+import { HistoryTab } from "../tools/HistoryTab";
 import { KmkTool } from "../tools/KmkTool";
 import { OverviewTab } from "../tools/OverviewTab";
 import { BatchTool, HighlightTool, SearchTool } from "../tools/SimpleTools";
@@ -82,6 +83,7 @@ const TABS = [
   { id: "translate", label: "Übersetzer" },
   { id: "overview", label: "Übersicht" },
   { id: "conflicts", label: "Konflikte" },
+  { id: "history", label: "Verlauf" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
@@ -95,6 +97,7 @@ export function DatasetPage() {
   const [error, setError] = useState("");
   const [meta, setMeta] = useState<DatasetState | null>(null);
   const [conflicts, setConflicts] = useState(0);
+  const [project, setProject] = useState<{ name: string } | null>(null);
   const requested = params.get("tab");
   const tab: TabId = TABS.some((t) => t.id === requested) ? (requested as TabId) : "cable";
 
@@ -112,17 +115,28 @@ export function DatasetPage() {
       }
     };
     void refresh();
+    const fast = window.setInterval(() => void refresh(), 400); // bis die Liste zum ersten Mal geladen ist
     const timer = window.setInterval(() => void refresh(), 5000);
-    return () => { alive = false; window.clearInterval(timer); };
+    const stopFast = window.setTimeout(() => window.clearInterval(fast), 15000);
+    return () => { alive = false; window.clearInterval(timer); window.clearInterval(fast); window.clearTimeout(stopFast); };
   }, [backend.key, datasetId, tab]);
 
+  useEffect(() => {
+    if (!meta?.projectId) return;
+    api<{ name: string }>(`/api/projects/${meta.projectId}`).then(setProject).catch(() => undefined);
+  }, [meta?.projectId]);
+
   const props: ToolProps | null = meta
-    ? { backend, datasetId, columns: meta.columns, creator: user?.display_name || user?.username || "", mapping: (meta.settings.mapping ?? {}) as Record<string, string | undefined> }
+    ? { backend, datasetId, columns: meta.columns, creator: user?.display_name || user?.username || "", mapping: (meta.settings.mapping ?? {}) as Record<string, string | undefined>, settings: meta.settings as Record<string, unknown> }
     : null;
 
   return (
     <div>
-      <p><Link to="/">← Projekte</Link></p>
+      <p className="crumbs">
+        <Link to="/">Projekte</Link>
+        {meta?.projectId && <> / <Link to={`/projects/${meta.projectId}`}>{project?.name ?? "Projekt"}</Link></>}
+        {meta && <> / <b>{meta.name}</b></>}
+      </p>
       {error && <p className="error">{error}</p>}
       <nav className="tabs">
         {TABS.map((t) => (
@@ -151,6 +165,7 @@ export function DatasetPage() {
       {props && tab === "cabinet" && <CabinetTool {...props} />}
       {props && tab === "translate" && <TranslateTool {...props} />}
       {props && tab === "overview" && <OverviewTab {...props} hasRoutes={!!(props.mapping.target1 || props.mapping.target2)} />}
+      {props && tab === "history" && <HistoryTab backend={backend} datasetId={datasetId} />}
       {props && tab === "conflicts" && <ConflictsTab backend={backend} datasetId={datasetId} />}
     </div>
   );

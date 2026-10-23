@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderMarkdown } from "./markdown";
+import { renderMarkdown, toggleTask } from "./markdown";
 
 describe("markdown", () => {
   it("renders headings, emphasis, code and lists", () => {
@@ -8,7 +8,7 @@ describe("markdown", () => {
     expect(html).toContain("<strong>fett</strong>");
     expect(html).toContain("<em>kursiv</em>");
     expect(html).toContain("<code>code</code>");
-    expect(html).toContain("<ul><li>eins</li><li class=\"task\">☑ zwei</li></ul>");
+    expect(html).toContain("<ul><li>eins</li><li class=\"task\" data-line=\"5\">☑ zwei</li></ul>");
     expect(html).toContain("<ol><li>a</li><li>b</li></ol>");
   });
 
@@ -25,5 +25,19 @@ describe("markdown", () => {
     expect(html).toContain("<pre><code>**kein fett** &lt;b&gt;</code></pre>");
     expect(html).toContain("<th>A</th>");
     expect(html).toContain("<td>2</td>");
+  });
+});
+
+describe("tasks", () => {
+  it("marks task lines and toggles them", () => {
+    const text = "# T\n\n- [ ] eins\n- [x] zwei\n> - [ ] zitat";
+    const html = renderMarkdown(text);
+    expect(html).toContain('data-line="2"');
+    expect(html).toContain('data-line="3"');
+    expect(html).toContain('data-line="4"');
+    expect(toggleTask(text, 2).split("\n")[2]).toBe("- [x] eins");
+    expect(toggleTask(text, 3).split("\n")[3]).toBe("- [ ] zwei");
+    expect(toggleTask(text, 4).split("\n")[4]).toBe("> - [x] zitat");
+    expect(toggleTask(text, 99)).toBe(text);
   });
 });

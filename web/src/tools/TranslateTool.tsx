@@ -6,7 +6,7 @@ import { Config, Notice, TemplateBar, useDebounced } from "./common";
 import type { ToolProps } from "./types";
 
 interface Sources { project_id: number; datasets: { id: number; name: string }[]; files: string[] }
-interface SourceInfo { columns: string[]; total: number; rows: unknown[][] }
+interface SourceInfo { columns: string[]; total: number; rows: unknown[][]; sheets: string[] }
 interface MappingRow { source: string; target: string; mode: "empty" | "overwrite" }
 interface Cell { target: string; old: unknown; new: unknown; changed: boolean }
 interface SampleRow { row: number; key: unknown; status: "match" | "none" | "empty_key" | "ambiguous"; cells: Cell[] }
@@ -15,11 +15,13 @@ interface Preview {
 }
 interface Settings {
   source: string; // "dataset:<id>" | "file:<name>" | ""
+  source_sheet: string; // Blatt der Quelldatei, leer = erstes
+  sheets: string[] | null; // Blätter der Liste, in die eingetragen wird; null = alle
   key_a: string; key_b: string; ignore_case: boolean; ignore_separators: boolean;
   duplicates: "first" | "last" | "skip"; mappings: MappingRow[];
 }
 
-const EMPTY: Settings = { source: "", key_a: "", key_b: "", ignore_case: true, ignore_separators: true, duplicates: "first", mappings: [] };
+const EMPTY: Settings = { source: "", source_sheet: "", sheets: null, key_a: "", key_b: "", ignore_case: true, ignore_separators: true, duplicates: "first", mappings: [] };
 const NEW_COLUMN = "__new__";
 const STATUS: Record<SampleRow["status"], string> = {
   match: "Treffer", none: "kein Treffer", empty_key: "Schlüssel leer", ambiguous: "mehrdeutig (übersprungen)",
@@ -31,9 +33,9 @@ function guessKey(columns: string[]): string {
   return columns.find((c) => /w[\s-]?(nr|nummer)|w-?num/i.test(c)) ?? columns.find((c) => /nummer|\bnr\b/i.test(c)) ?? "";
 }
 
-function toRef(source: string) {
+function toRef(source: string, sheet = "") {
   if (source.startsWith("dataset:")) return { kind: "dataset", dataset_id: Number(source.slice(8)) };
-  if (source.startsWith("file:")) return { kind: "file", file: source.slice(5) };
+  if (source.startsWith("file:")) return { kind: "file", file: source.slice(5), sheet };
   return null;
 }
 
@@ -48,7 +50,8 @@ function readSettings(datasetId: number): Settings {
   }
 }
 
-export function TranslateTool({ backend, datasetId, columns }: ToolProps) {
+export function TranslateTool({ backend, datasetId, columns, settings }: ToolProps) {
+  const targetSheets = ((settings?.sheets ?? []) as { name: string }[]).map((s) => s.name);
   const [cfg, setCfg] = useState<Settings>(() => readSettings(datasetId));
   const [sources, setSources] = useState<Sources | null>(null);
   const [info, setInfo] = useState<SourceInfo | null>(null);
@@ -58,6 +61,7 @@ export function TranslateTool({ backend, datasetId, columns }: ToolProps) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
+  const [lastBatch, setLastBatch] = useState<string | null>(null);
 
   const set = (change: Partial<Settings>) => setCfg((c) => ({ ...c, ...change }));
   useEffect(() => {
@@ -82,7 +86,7 @@ export function TranslateTool({ backend, datasetId, columns }: ToolProps) {
 
   // Quelle gewählt: Spalten und erste Zeilen holen, Schlüssel vorschlagen
   useEffect(() => {
-    const ref = toRef(cfg.source);
+    const ref = toRef(cfg.source, cfg.source_sheet);
     setInfo(null);
     if (!ref) return;
     let alive = true;
@@ -101,13 +105,14 @@ export function TranslateTool({ backend, datasetId, columns }: ToolProps) {
       })
       .catch((e) => alive && setError(errorText(e)));
     return () => { alive = false; };
-  }, [cfg.source, datasetId, columns.join("\u0001")]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cfg.source, cfg.source_sheet, datasetId, columns.join("\u0001")]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const ready = !!toRef(cfg.source) && !!cfg.key_a && !!cfg.key_b
+  const ready = !!toRef(cfg.source) && (cfg.sheets === null || cfg.sheets.length > 0) && !!cfg.key_a && !!cfg.key_b
     && cfg.mappings.length > 0 && cfg.mappings.every((m) => m.source && m.target.trim());
   const body = useMemo(() => ({
-    source: toRef(cfg.source), key_a: cfg.key_a, key_b: cfg.key_b, ignore_case: cfg.ignore_case,
+    source: toRef(cfg.source, cfg.source_sheet), key_a: cfg.key_a, key_b: cfg.key_b, ignore_case: cfg.ignore_case,
     ignore_separators: cfg.ignore_separators, duplicates: cfg.duplicates, mappings: cfg.mappings,
+    sheets: targetSheets.length ? cfg.sheets : null,
   }), [cfg]);
 
   const runPreview = useCallback(async () => {
@@ -141,10 +146,27 @@ export function TranslateTool({ backend, datasetId, columns }: ToolProps) {
     setMessage("");
     try {
       await syncDataset(backend).catch(() => undefined);
-      const done = await api<{ changed_rows: number; changed_cells: number }>(
+      const done = await api<{ batch: string; changed_rows: number; changed_cells: number }>(
         `/api/datasets/${datasetId}/translate/apply`, { method: "POST", body });
       await syncDataset(backend).catch(() => undefined);
       setMessage(`${done.changed_cells} Zelle(n) in ${done.changed_rows} Zeile(n) eingetragen.`);
+      setLastBatch(done.batch);
+      await runPreview();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const undoLast = async () => {
+    if (!lastBatch || !confirm("Den letzten Übersetzer-Lauf rückgängig machen? Werte, die danach erneut geändert wurden, bleiben unverändert.")) return;
+    setBusy(true);
+    try {
+      const r = await api<{ cells: number; skipped: number }>(`/api/datasets/${datasetId}/history/batches/${lastBatch}/undo`, { method: "POST" });
+      await syncDataset(backend).catch(() => undefined);
+      setLastBatch(null);
+      setMessage(`${r.cells} Zelle(n) zurückgesetzt${r.skipped ? `, ${r.skipped} übersprungen (inzwischen geändert)` : ""}.`);
       await runPreview();
     } catch (e) {
       setError(errorText(e));
@@ -212,7 +234,7 @@ export function TranslateTool({ backend, datasetId, columns }: ToolProps) {
         <h3>1. Quelle (zweite Tabelle)</h3>
         <div className="inline-form">
           <label>Liste oder Datei
-            <select value={cfg.source} onChange={(e) => set({ source: e.target.value, key_b: "" })}>
+            <select value={cfg.source} onChange={(e) => set({ source: e.target.value, source_sheet: "", key_b: "" })}>
               <option value="">– wählen –</option>
               {!!sources?.datasets.length && <optgroup label="Listen dieses Projekts">
                 {sources.datasets.map((d) => <option key={d.id} value={`dataset:${d.id}`}>{d.name}</option>)}
@@ -222,6 +244,13 @@ export function TranslateTool({ backend, datasetId, columns }: ToolProps) {
               </optgroup>}
             </select>
           </label>
+          {!!info?.sheets.length && info.sheets.length > 1 && (
+            <label>Blatt der Quelle
+              <select value={cfg.source_sheet || info.sheets[0]} onChange={(e) => set({ source_sheet: e.target.value, key_b: "" })}>
+                {info.sheets.map((n) => <option key={n}>{n}</option>)}
+              </select>
+            </label>
+          )}
           <label className="upload-inline">Datei hochladen (.xlsx, .xls, .csv)
             <input type="file" accept=".xlsx,.xls,.csv" disabled={progress !== null}
               onChange={(e) => { void uploadSource(e.target.files?.[0]); e.target.value = ""; }} />
@@ -266,6 +295,27 @@ export function TranslateTool({ backend, datasetId, columns }: ToolProps) {
           <label className="check"><input type="checkbox" checked={cfg.ignore_separators} onChange={(e) => set({ ignore_separators: e.target.checked })} />Leerzeichen, „-“, „_“, „.“, „/“ ignorieren (W-001 = W001)</label>
         </div>
       </section>
+
+      {targetSheets.length > 1 && (
+        <section className="card">
+          <h3>In welche Blätter dieser Liste eintragen?</h3>
+          <p className="muted">Diese Liste fasst mehrere Blätter zusammen (Spalte „{String(settings?.sheet_column ?? "Blatt")}“). Zeilen anderer Blätter bleiben unverändert.</p>
+          <div className="inline">
+            {targetSheets.map((n) => {
+              const picked = cfg.sheets === null || cfg.sheets.includes(n);
+              return (
+                <label className="check" key={n}>
+                  <input type="checkbox" checked={picked} onChange={(e) => {
+                    const current = cfg.sheets ?? targetSheets;
+                    const next = e.target.checked ? [...current, n] : current.filter((x) => x !== n);
+                    set({ sheets: next.length === targetSheets.length ? null : next });
+                  }} />{n}
+                </label>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       <section className="card">
         <h3>3. Was wohin geschrieben wird</h3>
@@ -334,7 +384,7 @@ export function TranslateTool({ backend, datasetId, columns }: ToolProps) {
               <button className="primary" disabled={busy || !s.changed_cells} onClick={() => void apply()}>Auf die Liste anwenden</button>
               <button disabled={busy} onClick={() => void exportExcel()} title="Die gespeicherte Liste bleibt unverändert">Als Excel herunterladen</button>
             </div>
-            {message && <p className="ok">{message}</p>}
+            {message && <p className="ok">{message} {lastBatch && <button onClick={() => void undoLast()}>Rückgängig</button>}</p>}
             <div className="table-wrap tall">
               <table>
                 <thead>

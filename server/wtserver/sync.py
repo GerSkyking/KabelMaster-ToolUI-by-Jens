@@ -54,8 +54,10 @@ def rows_since(db: Session, dataset: Dataset, since: int) -> list[Row]:
     return list(db.scalars(query))
 
 
-def _log(db: Session, dataset: Dataset, row: Row, field: str, old: Any, new: Any, actor: str, kind: str) -> None:
-    db.add(RowChange(dataset_id=dataset.id, row_id=row.id, field=field, old=old, new=new, kind=kind, by=actor))
+def _log(db: Session, dataset: Dataset, row: Row, field: str, old: Any, new: Any, actor: str, kind: str,
+         batch: str | None = None) -> None:
+    db.add(RowChange(dataset_id=dataset.id, row_id=row.id, field=field, old=old, new=new, kind=kind, by=actor,
+                     batch=batch))
 
 
 def _register_conflict(db: Session, dataset: Dataset, row: Row, field: str, base: Any, value: Any, actor: str) -> None:
@@ -71,7 +73,8 @@ def _register_conflict(db: Session, dataset: Dataset, row: Row, field: str, base
 
 
 def apply_values(
-    db: Session, dataset: Dataset, changes: dict[int, dict[str, Any]], actor: str, kind: str = "edit"
+    db: Session, dataset: Dataset, changes: dict[int, dict[str, Any]], actor: str, kind: str = "edit",
+    batch: str | None = None,
 ) -> int:
     """Setzt Feldwerte direkt (ohne Konfliktprüfung), z. B. beim Abhaken oder Entscheiden. Liefert Anzahl geänderter Zeilen."""
     project = db.scalar(select(Project).where(Project.id == dataset.project_id).with_for_update())
@@ -84,7 +87,7 @@ def apply_values(
         if not applied:
             continue
         for field, value in applied.items():
-            _log(db, dataset, row, field, row.data.get(field), value, actor, kind)
+            _log(db, dataset, row, field, row.data.get(field), value, actor, kind, batch)
         seq += 1
         row.data = {**row.data, **applied}
         row.rev, row.seq, row.updated_by, row.updated_at = row.rev + 1, seq, actor, utcnow()

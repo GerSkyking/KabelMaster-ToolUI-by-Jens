@@ -44,7 +44,7 @@ interface PushResult {
   row?: ServerRow;
 }
 
-async function fetchMeta(b: Backend): Promise<Pick<DatasetState, "id" | "name" | "columns" | "settings" | "canEdit">> {
+async function fetchMeta(b: Backend): Promise<Pick<DatasetState, "id" | "projectId" | "name" | "columns" | "settings" | "canEdit">> {
   if (b.share) {
     const r = await api<{ mode: string; dataset: { id: number; name: string; columns: string[]; settings: DatasetState["settings"] } }>(
       b.base,
@@ -52,8 +52,8 @@ async function fetchMeta(b: Backend): Promise<Pick<DatasetState, "id" | "name" |
     );
     return { ...r.dataset, canEdit: r.mode === "edit" };
   }
-  const d = await api<{ id: number; name: string; columns: string[]; settings: DatasetState["settings"]; role: string }>(b.base);
-  return { id: d.id, name: d.name, columns: d.columns, settings: d.settings, canEdit: d.role !== "viewer" };
+  const d = await api<{ id: number; project_id: number; name: string; columns: string[]; settings: DatasetState["settings"]; role: string }>(b.base);
+  return { id: d.id, projectId: d.project_id, name: d.name, columns: d.columns, settings: d.settings, canEdit: d.role !== "viewer" };
 }
 
 export async function syncDataset(b: Backend): Promise<SyncReport> {

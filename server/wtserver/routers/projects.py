@@ -9,13 +9,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from wtserver import audit
+from wtserver import audit, tabular
 from wtserver.config import Settings, get_settings
 from wtserver.db import get_db
-from wtserver.models import Dataset, Project, ProjectMember, User, purge_datasets
+from wtserver.models import BoardNote, CalendarFeed, Dataset, Project, ProjectMember, ScheduleEvent, ShopRequest, User, WorkLog, purge_datasets
 from wtserver.security import PROJECT_RANK, current_user, get_project, project_role
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -129,6 +129,8 @@ def delete_project(
     project = get_project(db, user, project_id, "owner")
     audit.record(db, request, "project_deleted", user, f"project:{project.id}", {"slug": project.slug})
     purge_datasets(db, [d.id for d in project.datasets])
+    for model in (ShopRequest, BoardNote, WorkLog, ScheduleEvent, CalendarFeed):
+        db.execute(delete(model).where(model.project_id == project.id))
     db.delete(project)
     db.commit()
 
@@ -219,6 +221,22 @@ async def upload_file(
     audit.record(db, request, "file_uploaded", user, f"project:{project.id}", {"file": target.name, "bytes": written})
     db.commit()
     return {"name": target.name, "size": written}
+
+
+@router.get("/{project_id}/files/{name}/sheets")
+def file_sheets(
+    project_id: int, name: str, user: User = Depends(current_user), db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Blattnamen einer Excel-Datei (für die Auswahl beim Import)."""
+    project = get_project(db, user, project_id)
+    path = project_file(settings, project, name)
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Datei nicht gefunden.")
+    try:
+        return {"sheets": tabular.sheet_names(path)}
+    except Exception as exc:  # noqa: BLE001 - defekte Datei: als Importfehler melden
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Datei nicht lesbar: {exc}") from exc
 
 
 @router.get("/{project_id}/files/{name}")

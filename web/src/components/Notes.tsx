@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, errorText } from "../api";
-import { renderMarkdown } from "../markdown";
+import { renderMarkdown, toggleTask } from "../markdown";
 
 interface NoteInfo { id: number; title: string; preview?: string; updated_by: string; updated_at: string }
 interface NoteFull extends NoteInfo { body: string; version: number }
@@ -53,15 +53,15 @@ export function Notes({ projectId, canEdit }: { projectId: number; canEdit: bool
     setEditing(true);
   };
 
-  const save = async () => {
-    if (!draft) return;
+  const save = async (current: Draft | null = draft) => {
+    if (!current) return;
     setBusy(true);
     setError("");
     try {
-      const payload = { title: draft.title, body: draft.body, version: draft.version };
-      const note = draft.id === null
+      const payload = { title: current.title, body: current.body, version: current.version };
+      const note = current.id === null
         ? await api<NoteFull>(base, { method: "POST", body: payload })
-        : await api<NoteFull>(`${base}/${draft.id}`, { method: "PUT", body: payload });
+        : await api<NoteFull>(`${base}/${current.id}`, { method: "PUT", body: payload });
       const next = { id: note.id, title: note.title === "Ohne Titel" ? "" : note.title, body: note.body, version: note.version };
       setDraft(next);
       setSaved(next);
@@ -71,6 +71,15 @@ export function Notes({ projectId, canEdit }: { projectId: number; canEdit: bool
     } finally {
       setBusy(false);
     }
+  };
+
+  // Häkchen in der Vorschau anklicken: im Lesemodus sofort speichern, im Bearbeiten-Modus nur den Text ändern
+  const onPreviewClick = (e: React.MouseEvent) => {
+    const item = (e.target as HTMLElement).closest("li.task[data-line]");
+    if (!item || !canEdit || !draft || busy) return;
+    const next = { ...draft, body: toggleTask(draft.body, Number(item.getAttribute("data-line"))) };
+    setDraft(next);
+    if (!editing && next.id !== null) void save(next);
   };
 
   const remove = async () => {
@@ -129,7 +138,7 @@ export function Notes({ projectId, canEdit }: { projectId: number; canEdit: bool
                           placeholder={"# Überschrift\n- Liste\n- [ ] Aufgabe\n\n**fett**, *kursiv*, `code`, [Link](https://…)"}
                           onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
               )}
-              <div className="markdown" dangerouslySetInnerHTML={{ __html: html || "<p class='muted'>Leer.</p>" }} />
+              <div className={`markdown${canEdit ? " editable" : ""}`} onClick={onPreviewClick} dangerouslySetInnerHTML={{ __html: html || "<p class='muted'>Leer.</p>" }} />
             </div>
             <div className="inline">
               {canEdit && !editing && <button onClick={() => setEditing(true)}>Bearbeiten</button>}

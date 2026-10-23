@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     cors_origins: str = ""  # Komma-getrennt, nur für getrenntes Frontend (Dev)
     max_upload_mb: int = 50
     share_default_hours: int = 72
+    calendar_allow_private: bool = False  # externe Kalender (ICS) auch aus dem internen Netz abrufen
+    timezone: str = "Europe/Berlin"  # für Tages-/Wochenauswertungen
     static_dir: Path | None = None  # gebautes Frontend, wird vom Server mit ausgeliefert
 
     # Logging
@@ -94,6 +96,10 @@ class Settings(BaseSettings):
     @property
     def projects_dir(self) -> Path:
         return self.data_dir / "projects"
+
+    @property
+    def catalog_dir(self) -> Path:
+        return self.data_dir / "catalog"
 
     @property
     def backups_dir(self) -> Path:

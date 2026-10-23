@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -29,6 +29,8 @@ MAPPING_KEYS = ("cable_id", "cross_section", "target_length", "start", "end", "p
 class ImportIn(BaseModel):
     file: str
     name: str = ""
+    mode: Literal["first", "sheet", "all"] = "first"  # erstes Blatt | ein Blatt | alle Blätter zu einer Liste
+    sheet: str = ""
 
 
 class DatasetPatch(BaseModel):
@@ -67,13 +69,22 @@ def import_dataset(
     path = project_file(settings, project, body.file)
     if not path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Datei nicht gefunden.")
+    settings_json: dict[str, Any] = {}
+    default_name = path.stem
     try:
-        columns, rows = tabular.read_rows(path)
+        if body.mode == "all":
+            columns, rows, sheets, sheet_column = tabular.read_workbook(path)
+            settings_json = {"sheets": sheets, "sheet_column": sheet_column}
+        elif body.mode == "sheet":
+            columns, rows = tabular.read_rows(path, body.sheet)
+            default_name = f"{path.stem} - {body.sheet}"
+        else:
+            columns, rows = tabular.read_rows(path)
     except ExcelImportError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
-    dataset = Dataset(project_id=project.id, name=body.name.strip() or path.stem, source_file=path.name,
-                      columns=columns, settings={})
+    dataset = Dataset(project_id=project.id, name=body.name.strip() or default_name, source_file=path.name,
+                      columns=columns, settings=settings_json)
     db.add(dataset)
     db.flush()
     project.seq += 1
@@ -157,7 +168,7 @@ def export_dataset(
     dataset_id: int, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)
 ) -> Response:
     dataset = get_dataset(db, user, dataset_id)
-    content = tabular.to_xlsx_bytes(dataset.columns, _live_rows(db, dataset), dataset.name)
+    content = tabular.to_workbook_bytes(dataset.columns, _live_rows(db, dataset), dataset.name, dataset.settings)
     audit.record(db, request, "dataset_exported", user, f"dataset:{dataset.id}")
     db.commit()
     filename = quote(f"{dataset.name}.xlsx")

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -122,7 +122,8 @@ class RowChange(Base):
     field: Mapped[str] = mapped_column(String(255))
     old: Mapped[Any] = mapped_column(JsonType, nullable=True)
     new: Mapped[Any] = mapped_column(JsonType, nullable=True)
-    kind: Mapped[str] = mapped_column(String(20), default="edit")  # edit | resolve | label | create | delete
+    kind: Mapped[str] = mapped_column(String(20), default="edit")  # edit | resolve | label | create | delete | translate | undo
+    batch: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # gemeinsamer Lauf (Übersetzer, Rückgängig)
     by: Mapped[str] = mapped_column(String(150), default="")
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
@@ -244,3 +245,104 @@ class AuditLog(Base):
     target: Mapped[str] = mapped_column(String(255), default="")
     ip: Mapped[str] = mapped_column(String(64), default="")
     detail: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
+
+
+class CatalogItem(Base):
+    """Artikel der allgemeinen Liste (für alle Projekte). Gehört zu keinem Warenkorb, bis jemand ihn anfordert."""
+    __tablename__ = "catalog_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), index=True)
+    article_no: Mapped[str] = mapped_column(String(100), default="")
+    category: Mapped[str] = mapped_column(String(100), default="")
+    unit: Mapped[str] = mapped_column(String(30), default="Stk")
+    note: Mapped[str] = mapped_column(String(500), default="")
+    image: Mapped[str] = mapped_column(String(120), default="")  # Dateiname unter DATA_DIR/catalog
+    created_by: Mapped[str] = mapped_column(String(150), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ShopRequest(Base):
+    """Bedarf: etwas mitbringen oder prüfen. Status ergibt sich aus packed_at / done_at.
+    Name und Artikelnummer sind kopiert, damit das Archiv auch nach dem Löschen eines Katalogartikels stimmt."""
+    __tablename__ = "shop_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # None = ohne Projekt
+    catalog_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    article_no: Mapped[str] = mapped_column(String(100), default="")
+    unit: Mapped[str] = mapped_column(String(30), default="Stk")
+    qty: Mapped[float] = mapped_column(Float, default=1)
+    kind: Mapped[str] = mapped_column(String(10), default="bringen")  # bringen | pruefen
+    due: Mapped[str] = mapped_column(String(10), default="")  # JJJJ-MM-TT, optional
+    note: Mapped[str] = mapped_column(String(500), default="")
+    requested_by: Mapped[str] = mapped_column(String(150), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    packed_by: Mapped[str] = mapped_column(String(150), default="")
+    packed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    done_by: Mapped[str] = mapped_column(String(150), default="")
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class BoardNote(Base):
+    """Haftnotiz auf dem Whiteboard. project_id None = gemeinsames Whiteboard für alle Projekte."""
+    __tablename__ = "board_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    text: Mapped[str] = mapped_column(Text, default="")
+    color: Mapped[str] = mapped_column(String(10), default="yellow")
+    x: Mapped[float] = mapped_column(Float, default=20)
+    y: Mapped[float] = mapped_column(Float, default=20)
+    w: Mapped[float] = mapped_column(Float, default=200)
+    h: Mapped[float] = mapped_column(Float, default=140)
+    created_by: Mapped[str] = mapped_column(String(150), default="")
+    updated_by: Mapped[str] = mapped_column(String(150), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class WorkLog(Base):
+    """Persönlicher Tagesbericht: was ich an einem Tag im Projekt gemacht habe. Nur der Autor sieht ihn."""
+    __tablename__ = "work_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    day: Mapped[str] = mapped_column(String(10), index=True)  # JJJJ-MM-TT
+    text: Mapped[str] = mapped_column(Text, default="")
+    hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ScheduleEvent(Base):
+    """Eintrag im Zeitplan/Kalender eines Projekts (project_id None = für alle sichtbar). Datumsangaben JJJJ-MM-TT."""
+    __tablename__ = "schedule_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    start: Mapped[str] = mapped_column(String(10), index=True)
+    end: Mapped[str] = mapped_column(String(10), default="")  # leer = eintägig; einschließlich
+    kind: Mapped[str] = mapped_column(String(12), default="phase")  # phase | termin | urlaub | meilenstein
+    color: Mapped[str] = mapped_column(String(10), default="blue")
+    note: Mapped[str] = mapped_column(String(500), default="")
+    done: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[str] = mapped_column(String(150), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class CalendarFeed(Base):
+    """Externer Kalender (iCal/ICS-Link, z. B. Urlaub oder Termine). Der Server holt ihn ab und merkt sich die Termine."""
+    __tablename__ = "calendar_feeds"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    url: Mapped[str] = mapped_column(String(1000))
+    color: Mapped[str] = mapped_column(String(10), default="gray")
+    events: Mapped[list[Any]] = mapped_column(JsonType, default=list)
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str] = mapped_column(String(300), default="")
+    created_by: Mapped[str] = mapped_column(String(150), default="")
