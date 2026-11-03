@@ -73,7 +73,7 @@ table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th { position: sticky; top: 0; background: var(--panel); font-size: 0.8rem; color: var(--muted); }
 .table-wrap { overflow: auto; max-width: 100%; }
-.table-wrap.tall { max-height: 55vh; }
+.table-wrap.tall { max-height: 55vh; max-height: 55dvh; }
 table.analysis td:not(:first-child), table.analysis th:not(:first-child) { text-align: right; }
 table.analysis tr.total td { font-weight: 700; }
 td.actions { display: flex; gap: 6px; flex-wrap: wrap; white-space: normal; }
@@ -89,7 +89,7 @@ table.data th { position: sticky; padding-right: 14px; }
 
 /* Mehrfachauswahl-Dropdown (Querschnitt) */
 .multi { position: relative; }
-.multi-pop { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; width: min(300px, 90vw); display: grid; gap: 8px; padding: 10px;
+.multi-pop { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; width: min(300px, calc(100vw - 24px)); display: grid; gap: 8px; padding: 10px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25); }
 .multi-actions { display: flex; gap: 6px; } .multi-actions button { flex: 1; min-height: 34px; padding: 4px 8px; }
 .multi-list { display: grid; gap: 2px; max-height: 260px; overflow: auto; }
@@ -235,6 +235,20 @@ p.plausibility { font-weight: 600; margin: 8px 0; }
 .cab-split { display: grid; gap: 12px; }
 @media (min-width: 800px) { .cab-split { grid-template-columns: minmax(200px, 1fr) 4fr; align-items: start; } }
 .cab-list { margin: 0; display: grid; gap: 8px; }
-.cab-list ul { max-height: 65vh; overflow: auto; }
+.cab-list ul { max-height: 65vh; max-height: 65dvh; overflow: auto; }
 .cab-list li button { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; text-align: left; }
 .cab-table { margin: 0; }
+
+/* Smartphone: Safe-Area (Notch/Home-Indikator), größere Touch-Ziele */
+header.top { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); padding-top: max(10px, env(safe-area-inset-top)); }
+main { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); padding-bottom: max(48px, calc(24px + env(safe-area-inset-bottom))); }
+.board-scroll { max-height: 72dvh; }
+@media (pointer: coarse) {
+  button, .button, input, select { min-height: 46px; }
+  label.check input[type="checkbox"] { width: 24px; height: 24px; }
+  .multi-list label.check, ul.col-config label.check { min-height: 44px; }
+  ul.col-config button, ul.col-config input[type="number"], .multi-actions button { min-height: 44px; }
+  .resizer { width: 26px; }
+  .resizer::after { right: 12px; }
+}
+@media (max-width: 700px) { main { padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); } }

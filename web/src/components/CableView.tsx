@@ -296,7 +296,11 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
   const select = useCallback(async (id: number) => {
     await commit();
     setSelectedId(id);
-    setTimeout(() => document.getElementById(`row-${id}`)?.scrollIntoView({ block: "nearest" }), 0);
+    setTimeout(() => {
+      // Einspaltiges Layout (Handy/Tablet hochkant): Eingabekarte liegt über der Liste, also dorthin scrollen
+      if (window.matchMedia("(max-width: 1099px)").matches) document.getElementById("cable-focus")?.scrollIntoView({ block: "start", behavior: "smooth" });
+      else document.getElementById(`row-${id}`)?.scrollIntoView({ block: "nearest" });
+    }, 0);
   }, [commit]);
 
   const step = useCallback((delta: number) => {
@@ -566,7 +570,7 @@ th{background:#eee}thead{display:table-header-group}tr{page-break-inside:avoid}t
       )}
 
       <div className="panes">
-        <section className="focus card">
+        <section className="focus card" id="cable-focus">
           {selected && complete ? (
             <>
               <div className="focus-head">
