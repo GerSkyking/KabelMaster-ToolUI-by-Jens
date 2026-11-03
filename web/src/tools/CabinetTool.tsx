@@ -1,5 +1,5 @@
 // Schrank-Erkennung: Muster, erkannte Schränke, Einzel- oder Sammeldatei.
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ColumnPanel, Config, FormatChoice, GlobalFieldsPanel, Notice, OutputPanel, ResultTable, TablePayload, TemplateBar,
   requestBody, useDebounced, useGlobals, useRequestKey, useToolApi, useToolConfig,
@@ -16,6 +16,10 @@ export function CabinetTool(props: ToolProps) {
   const [cabinets, setCabinets] = useState<{ name: string; count: number }[]>([]);
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   const [picked, setPicked] = useState("");
+  const [view, setView] = useState<"settings" | "cabinets">(() => {
+    try { return localStorage.getItem("cabinet-view") === "cabinets" ? "cabinets" : "settings"; } catch { return "settings"; }
+  });
+  const [cabQuery, setCabQuery] = useState("");
   const [table, setTable] = useState<TablePayload | null>(null);
   const cab: Config = config.cabinet_config;
   const setCab = (change: Config) => update({ cabinet_config: { ...cab, ...change } });
@@ -28,7 +32,26 @@ export function CabinetTool(props: ToolProps) {
       setCabinets(r.cabinets);
       setTable(r.table ?? null);
     });
-  }, [key]);
+  }, [key], view === "cabinets" ? 120 : 500);
+
+  const changeView = (v: "settings" | "cabinets") => {
+    setView(v);
+    try { localStorage.setItem("cabinet-view", v); } catch { /* Speicher gesperrt */ }
+  };
+
+  // Schrank-Ansicht: immer ein Schrank gewählt, damit rechts direkt die Tabelle steht
+  useEffect(() => {
+    if (view === "cabinets" && cabinets.length && !cabinets.some((c) => c.name === picked)) setPicked(cabinets[0].name);
+  }, [view, cabinets, picked]);
+  const shownCabinets = useMemo(() => {
+    const q = cabQuery.trim().toLowerCase();
+    return q ? cabinets.filter((c) => c.name.toLowerCase().includes(q)) : cabinets;
+  }, [cabinets, cabQuery]);
+  const moveSelection = (delta: number) => {
+    if (!shownCabinets.length) return;
+    const i = shownCabinets.findIndex((c) => c.name === picked);
+    setPicked(shownCabinets[Math.min(Math.max(i + delta, 0), shownCabinets.length - 1)].name);
+  };
 
   const chosen = cabinets.map((c) => c.name).filter((n) => !skipped.has(n));
   const toggle = (name: string) => setSkipped((s) => {
@@ -42,6 +65,37 @@ export function CabinetTool(props: ToolProps) {
 
   return (
     <div className="tool">
+      <div className="tabs sub-tabs" role="tablist">
+        <button role="tab" aria-selected={view === "settings"} className={view === "settings" ? "active" : ""} onClick={() => changeView("settings")}>Einstellungen &amp; Export</button>
+        <button role="tab" aria-selected={view === "cabinets"} className={view === "cabinets" ? "active" : ""} onClick={() => changeView("cabinets")}>
+          Schränke ansehen{cabinets.length ? ` (${cabinets.length})` : ""}
+        </button>
+      </div>
+      {view === "cabinets" ? (
+        <div className="cab-split">
+          <aside className="card cab-list"
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); moveSelection(e.key === "ArrowDown" ? 1 : -1); }
+            }}>
+            <input type="search" placeholder="Schrank suchen …" value={cabQuery} onChange={(e) => setCabQuery(e.target.value)} />
+            <ul className="plain">
+              {shownCabinets.map((c) => (
+                <li key={c.name}>
+                  <button className={picked === c.name ? "active" : ""} aria-current={picked === c.name} onClick={() => setPicked(c.name)}>
+                    <span>{c.name}</span><span className="chip">{c.count}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {!shownCabinets.length && <p className="muted">{cabinets.length ? "Kein Treffer." : "Keine Schränke erkannt. Muster unter „Einstellungen & Export“ prüfen."}</p>}
+          </aside>
+          <section className="card cab-table">
+            {picked ? <><h3>Schrank {picked}</h3><ResultTable table={table} /></> : <p className="muted">Schrank links auswählen.</p>}
+            <Notice error={api.error} />
+          </section>
+        </div>
+      ) : (
+      <>
       <TemplateBar tabId="cabinet" config={config} columns={props.columns} onApply={replace} />
       <GlobalFieldsPanel globals={globals} onChange={setGlobals} />
       <div className="tool-grid">
@@ -93,6 +147,8 @@ export function CabinetTool(props: ToolProps) {
           {picked && <section className="card"><h3>Schrank {picked}</h3><ResultTable table={table} /></section>}
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }
