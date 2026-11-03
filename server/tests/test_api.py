@@ -131,6 +131,27 @@ def test_analysis_and_export(admin, dataset):
     assert len(exported) == 4 and exported.loc[0, "Ist"] == 10
 
 
+def test_ignore_cables_without_target_meters(admin, dataset):
+    url = f"/api/datasets/{dataset['id']}"
+    admin.patch(url, json={"settings": {"mapping": MAPPING}})
+    base = admin.get(f"{url}/analysis").json()
+    assert base["ignored"] == 0
+    first = rows(admin, dataset["id"])["rows"][0]
+    admin.post(f"{url}/sync", json={"ops": [{"id": first["id"], "base_rev": first["rev"], "patch": {"Länge": 0}}]})
+    admin.patch(url, json={"settings": {"ignore_no_target": True}})
+    result = admin.get(f"{url}/analysis").json()
+    assert result["ignored"] == 1 and result["total"]["total"] == base["total"]["total"] - 1
+
+
+def test_table_layout_setting_is_shared_and_validated(admin, dataset):
+    url = f"/api/datasets/{dataset['id']}"
+    layout = {"order": ["Kabel", "Ist"], "hidden": ["Ist"], "widths": {"Kabel": 120}}
+    r = admin.patch(url, json={"settings": {"table_layout": layout}})
+    assert r.status_code == 200 and r.json()["settings"]["table_layout"] == layout
+    bad = admin.patch(url, json={"settings": {"table_layout": {"order": "x" * 100}}})
+    assert bad.json()["settings"]["table_layout"] == layout  # ungültiges Layout wird nicht übernommen
+
+
 def test_add_columns(admin, dataset):
     r = admin.patch(f"/api/datasets/{dataset['id']}", json={"add_columns": ["Notiz", "Kabel"]})
     assert r.json()["columns"][-1] == "Notiz" and r.json()["columns"].count("Kabel") == 1

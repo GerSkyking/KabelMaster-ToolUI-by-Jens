@@ -61,7 +61,7 @@ def create_key(
     return {**_key_out(key), "key": plain}  # Klartext nur jetzt sichtbar
 
 
-@router.delete("/api-keys/{key_id}", status_code=204)
+@router.delete("/api-keys/{key_id}", status_code=204, response_model=None)
 def revoke_key(
     key_id: int, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)
 ) -> None:

@@ -101,7 +101,7 @@ def patch_log(log_id: int, body: LogPatch, user: User = Depends(current_user), d
     return log_out(entry, project_names(db, [entry.project_id]))
 
 
-@router.delete("/{log_id}", status_code=204)
+@router.delete("/{log_id}", status_code=204, response_model=None)
 def delete_log(log_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> None:
     db.delete(_mine(db, user, log_id))
     db.commit()

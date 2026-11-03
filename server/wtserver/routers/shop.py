@@ -140,7 +140,7 @@ def _remove_image(settings: Settings, item: CatalogItem) -> None:
         item.image = ""
 
 
-@router.delete("/catalog/{item_id}", status_code=204)
+@router.delete("/catalog/{item_id}", status_code=204, response_model=None)
 def delete_catalog(
     item_id: int, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -175,7 +175,7 @@ async def put_image(
     return catalog_out(item)
 
 
-@router.delete("/catalog/{item_id}/image", status_code=204)
+@router.delete("/catalog/{item_id}/image", status_code=204, response_model=None)
 def delete_image(item_id: int, user: User = Depends(current_user), db: Session = Depends(get_db),
                  settings: Settings = Depends(get_settings)) -> None:
     _remove_image(settings, _item(db, item_id))
@@ -303,7 +303,7 @@ def done(req_id: int, body: Flag, user: User = Depends(current_user), db: Sessio
     return _out(db, req)
 
 
-@router.delete("/requests/{req_id}", status_code=204)
+@router.delete("/requests/{req_id}", status_code=204, response_model=None)
 def delete_request(req_id: int, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)) -> None:
     req = _req(db, user, req_id)
     audit.record(db, request, "shop_deleted", user, f"shop:{req.id}", {"title": req.title})

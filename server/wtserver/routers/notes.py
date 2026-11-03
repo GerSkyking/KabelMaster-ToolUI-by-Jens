@@ -88,7 +88,7 @@ def save_note(
     return note_out(note)
 
 
-@router.delete("/{note_id}", status_code=204)
+@router.delete("/{note_id}", status_code=204, response_model=None)
 def delete_note(
     project_id: int, note_id: int, request: Request,
     user: User = Depends(current_user), db: Session = Depends(get_db),

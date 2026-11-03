@@ -76,7 +76,7 @@ def patch_note(note_id: int, body: NotePatch, user: User = Depends(current_user)
     return note_out(note)
 
 
-@router.delete("/{note_id}", status_code=204)
+@router.delete("/{note_id}", status_code=204, response_model=None)
 def delete_note(note_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> None:
     db.delete(_get(db, user, note_id))
     db.commit()

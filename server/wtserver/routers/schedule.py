@@ -142,7 +142,7 @@ def patch_event(event_id: int, body: EventPatch, user: User = Depends(current_us
     return event_out(event, project_names(db, [event.project_id] if event.project_id else []))
 
 
-@router.delete("/events/{event_id}", status_code=204)
+@router.delete("/events/{event_id}", status_code=204, response_model=None)
 def delete_event(event_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> None:
     db.delete(_event(db, user, event_id))
     db.commit()
@@ -188,7 +188,7 @@ def refresh_feed(feed_id: int, user: User = Depends(current_user), db: Session =
     return {"error": feed.error, "events": len(feed.events or [])}
 
 
-@router.delete("/feeds/{feed_id}", status_code=204)
+@router.delete("/feeds/{feed_id}", status_code=204, response_model=None)
 def delete_feed(feed_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> None:
     db.delete(_feed(db, user, feed_id))
     db.commit()

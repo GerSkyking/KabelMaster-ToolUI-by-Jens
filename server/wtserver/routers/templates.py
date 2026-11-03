@@ -114,7 +114,7 @@ def update_template(
     return _out(template, user, full=True)
 
 
-@router.delete("/{template_id}", status_code=204)
+@router.delete("/{template_id}", status_code=204, response_model=None)
 def delete_template(
     template_id: int, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)
 ) -> None:

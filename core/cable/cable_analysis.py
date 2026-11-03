@@ -83,22 +83,23 @@ def format_number(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".").replace(".", ",")
 
 
-def is_ignored(target_length: object, ignore_short: bool, min_length: float) -> bool:
-    if not ignore_short:
-        return False
+def is_ignored(target_length: object, ignore_short: bool, min_length: float, ignore_no_target: bool = False) -> bool:
     length = parse_number(target_length)
-    return length is not None and length < min_length
+    if ignore_no_target and (length is None or length <= 0):
+        return True  # keine Soll-Meter: Kabel muss nicht gezogen werden
+    return ignore_short and length is not None and length < min_length
 
 
 def analyze(
-    dataframe: pd.DataFrame, columns: CableColumns, ignore_short: bool = False, min_length: float = 0.0
+    dataframe: pd.DataFrame, columns: CableColumns, ignore_short: bool = False, min_length: float = 0.0,
+    ignore_no_target: bool = False,
 ) -> AnalysisResult:
     result = AnalysisResult()
     groups: dict[str, GroupStats] = {}
     for target, section, pulled in zip(
         dataframe[columns.target_length], dataframe[columns.cross_section], dataframe[columns.pulled_length]
     ):
-        if is_ignored(target, ignore_short, min_length):
+        if is_ignored(target, ignore_short, min_length, ignore_no_target):
             result.ignored += 1
             continue
         label = "" if section is None or pd.isna(section) else str(section).strip()

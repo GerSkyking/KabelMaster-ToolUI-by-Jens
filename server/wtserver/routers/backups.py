@@ -113,7 +113,7 @@ def download(backup_id: int, request: Request, user: User = Depends(require_admi
     return FileResponse(path, media_type="application/zip", filename=backup.filename)
 
 
-@router.delete("/{backup_id}", status_code=204)
+@router.delete("/{backup_id}", status_code=204, response_model=None)
 def delete(backup_id: int, request: Request, user: User = Depends(require_admin), db: Session = Depends(get_db),
            settings: Settings = Depends(get_settings)) -> None:
     backup = _get(db, backup_id)

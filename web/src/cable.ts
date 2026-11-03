@@ -78,14 +78,62 @@ export function excelLetter(index: number): string {
 export interface CableOptions {
   ignoreShort: boolean;
   minLength: number;
+  ignoreNoTarget?: boolean;
 }
 
 export type RowState = "open" | "done" | "ignored";
 
 export function isIgnored(target: unknown, opts: CableOptions): boolean {
-  if (!opts.ignoreShort) return false;
   const length = parseNumber(target);
-  return length !== null && length < opts.minLength;
+  if (opts.ignoreNoTarget && (length === null || length <= 0)) return true; // keine Soll-Meter
+  return !!opts.ignoreShort && length !== null && length < opts.minLength;
+}
+
+export const NO_SECTION = "(ohne Querschnitt)";
+
+/** Querschnitt einer Zeile als Gruppenname (leer -> "(ohne Querschnitt)"). */
+export function sectionLabel(row: Row, mapping: Mapping): string {
+  const raw = mapping.cross_section ? row[mapping.cross_section] : null;
+  return raw === null || raw === undefined || String(raw).trim() === "" ? NO_SECTION : String(raw).trim();
+}
+
+export const NO_ROUTE = "(ohne Ziele)";
+
+/** Strecke eines Kabels; A -> B und B -> A sind dieselbe Strecke (wie in der Prognose). */
+export function routeGroup(row: Row, mapping: Mapping): string {
+  const t = (key?: string) => (key ? display(row[key]).trim() : "");
+  const [a, b] = [t(mapping.target1), t(mapping.target2)].sort((x, y) => x.localeCompare(y, "de", { numeric: true }));
+  if (!a && !b) return NO_ROUTE;
+  return a && b ? `${a} ↔ ${b}` : a || b;
+}
+
+export type GroupBy = "section" | "route";
+
+/** Warnung bei auffälligen Eingaben (Tippfehler), sonst null. */
+export const DEVIATION_LIMIT = 0.2;
+export function plausibility(target: unknown, start: unknown, end: unknown): string | null {
+  const a = parseNumber(start), b = parseNumber(end);
+  if (a !== null && b !== null && a === b) return "Von und Bis sind gleich";
+  const length = computeLength(start, end);
+  const soll = parseNumber(target);
+  if (length !== null && length > 0 && soll !== null && soll > 0) {
+    const deviation = (length - soll) / soll;
+    if (Math.abs(deviation) > DEVIATION_LIMIT) {
+      const pct = Math.round(deviation * 100);
+      return `Länge ${formatNumber(length)} m statt Soll ${formatNumber(soll)} m (${pct > 0 ? "+" : ""}${pct} %)`;
+    }
+  }
+  return null;
+}
+
+export function compareSections(a: string, b: string): number {
+  const na = parseNumber(a) ?? Infinity, nb = parseNumber(b) ?? Infinity;
+  return na === nb ? a.localeCompare(b) : na < nb ? -1 : 1;
+}
+
+/** Alle vorkommenden Querschnitte, numerisch sortiert. */
+export function crossSections(rows: Row[], mapping: Mapping): string[] {
+  return [...new Set(rows.map((r) => sectionLabel(r, mapping)))].sort(compareSections);
 }
 
 export function rowState(row: Row, mapping: Mapping, opts: CableOptions): RowState {
@@ -117,7 +165,7 @@ export function mappingComplete(mapping: Mapping, columns: string[]): boolean {
   });
 }
 
-export function analyze(rows: Row[], mapping: Mapping, opts: CableOptions): Analysis {
+export function analyze(rows: Row[], mapping: Mapping, opts: CableOptions, by: GroupBy = "section"): Analysis {
   const groups = new Map<string, GroupStats>();
   const total: GroupStats = { label: "Gesamt", total: 0, done: 0, metersTotal: 0, metersDone: 0 };
   let ignored = 0;
@@ -127,8 +175,7 @@ export function analyze(rows: Row[], mapping: Mapping, opts: CableOptions): Anal
       ignored += 1;
       continue;
     }
-    const raw = mapping.cross_section ? row[mapping.cross_section] : null;
-    const label = raw === null || raw === undefined || String(raw).trim() === "" ? "(ohne Querschnitt)" : String(raw).trim();
+    const label = by === "route" ? routeGroup(row, mapping) : sectionLabel(row, mapping);
     let group = groups.get(label);
     if (!group) groups.set(label, (group = { label, total: 0, done: 0, metersTotal: 0, metersDone: 0 }));
     const meters = (mapping.target_length ? parseNumber(row[mapping.target_length]) : null) ?? 0;
@@ -141,11 +188,6 @@ export function analyze(rows: Row[], mapping: Mapping, opts: CableOptions): Anal
       }
     }
   }
-  const key = (g: GroupStats): [number, string] => [parseNumber(g.label) ?? Infinity, g.label];
-  const sorted = [...groups.values()].sort((a, b) => {
-    const [na, la] = key(a);
-    const [nb, lb] = key(b);
-    return na === nb ? la.localeCompare(lb) : na < nb ? -1 : 1;
-  });
+  const sorted = [...groups.values()].sort((a, b) => by === "route" ? a.label.localeCompare(b.label, "de", { numeric: true }) : compareSections(a.label, b.label));
   return { groups: sorted, total, ignored };
 }

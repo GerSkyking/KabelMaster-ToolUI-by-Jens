@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyze, computeLength, excelLetter, formatNumber, parseNumber, shortDate } from "./cable";
+import { analyze, plausibility, computeLength, excelLetter, formatNumber, parseNumber, shortDate } from "./cable";
 
 const mapping = {
   cable_id: "Kabel", cross_section: "QS", target_length: "Soll", start: "Von", end: "Bis", pulled_length: "Ist",
@@ -39,6 +39,34 @@ describe("cable", () => {
     const r = analyze(rows, mapping, { ignoreShort: false, minLength: 0 });
     expect([r.total.total, r.total.done]).toEqual([4, 1]);
     expect(r.groups.map((g) => g.label)).toEqual(["3x1,5", "5x2,5"]);
+  });
+
+  it("ignores cables without target meters", () => {
+    const r = analyze(rows, { ...mapping }, { ignoreShort: false, minLength: 0, ignoreNoTarget: true });
+    expect(r.ignored).toBe(0);
+    const zero = [...rows, { Kabel: "e", QS: "3x1,5", Soll: 0, Ist: null }, { Kabel: "f", QS: "3x1,5", Soll: null, Ist: null }];
+    const r2 = analyze(zero, mapping, { ignoreShort: false, minLength: 0, ignoreNoTarget: true });
+    expect(r2.ignored).toBe(2);
+    expect(r2.total.total).toBe(4);
+  });
+
+  it("groups by route regardless of direction", () => {
+    const m = { ...mapping, target1: "Z1", target2: "Z2" };
+    const data = [
+      { Kabel: "a", QS: "x", Soll: 10, Ist: 10, Z1: "A", Z2: "B" },
+      { Kabel: "b", QS: "x", Soll: 10, Ist: null, Z1: "B", Z2: "A" },
+      { Kabel: "c", QS: "x", Soll: 10, Ist: null, Z1: "A", Z2: "C" },
+    ];
+    const r = analyze(data, m, { ignoreShort: false, minLength: 0 }, "route");
+    expect(r.groups.map((g) => [g.label, g.total, g.done])).toEqual([["A ↔ B", 2, 1], ["A ↔ C", 1, 0]]);
+  });
+
+  it("warns about implausible entries", () => {
+    expect(plausibility(10, 5, 5)).toMatch(/gleich/);
+    expect(plausibility(10, 0, 10.5)).toBeNull();
+    expect(plausibility(10, 0, 14)).toMatch(/\+40 %/);
+    expect(plausibility(null, 0, 14)).toBeNull();
+    expect(plausibility(10, null, null)).toBeNull();
   });
 
   it("ignores short ends", () => {

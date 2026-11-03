@@ -85,6 +85,7 @@ def forecast(
     mapping: dict[str, str | None],
     ignore_short: bool = False,
     min_length: float = 0.0,
+    ignore_no_target: bool = False,
     sample_size: int = SAMPLE_SIZE,
 ) -> ForecastResult:
     col = lambda key: mapping.get(key) or ""  # noqa: E731
@@ -93,7 +94,7 @@ def forecast(
     entries: list[dict[str, Any]] = []
     for position, (index, row) in enumerate(dataframe.iterrows()):
         target = row[col("target_length")] if has("target_length") else None
-        if is_ignored(target, ignore_short, min_length):
+        if is_ignored(target, ignore_short, min_length, ignore_no_target):
             continue
         label = _text(row[col("cross_section")]) if has("cross_section") else ""
         pulled = (parse_number(row[col("pulled_length")]) if has("pulled_length") else None) or 0.0

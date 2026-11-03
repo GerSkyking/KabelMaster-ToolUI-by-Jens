@@ -8,7 +8,8 @@ export interface DatasetState {
   projectId?: number;
   name: string;
   columns: string[];
-  settings: { mapping?: Mapping; ignore_short?: boolean; min_length?: number; auto_date?: boolean };
+  settings: { mapping?: Mapping; ignore_short?: boolean; min_length?: number; ignore_no_target?: boolean;
+    table_layout?: { order: string[]; hidden: string[]; widths: Record<string, number> } | null; auto_date?: boolean };
   canEdit: boolean;
   seq: number; // bis hierhin ist der Server-Stand lokal vorhanden
   pendingColumns: string[];

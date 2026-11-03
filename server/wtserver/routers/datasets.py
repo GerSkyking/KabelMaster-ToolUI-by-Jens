@@ -22,7 +22,22 @@ from wtserver.sync import SyncRequest, apply_ops, row_out, rows_since
 
 router = APIRouter(prefix="/api", tags=["datasets"])
 
-_SETTING_KEYS = {"mapping", "ignore_short", "min_length", "auto_date"}
+_SETTING_KEYS = {"mapping", "ignore_short", "min_length", "auto_date", "ignore_no_target", "table_layout"}
+
+
+def _valid_layout(value: object) -> bool:
+    """Gemeinsames Tabellenlayout: {order: [str], hidden: [str], widths: {str: Zahl}} in vernünftiger Größe."""
+    if not isinstance(value, dict):
+        return False
+    order, hidden, widths = value.get("order", []), value.get("hidden", []), value.get("widths", {})
+    return (
+        isinstance(order, list) and isinstance(hidden, list) and isinstance(widths, dict)
+        and len(order) <= 500 and len(hidden) <= 500 and len(widths) <= 500
+        and all(isinstance(k, str) and len(k) <= 300 for k in [*order, *hidden, *widths])
+        and all(isinstance(w, (int, float)) and not isinstance(w, bool) for w in widths.values())
+    )
+
+
 MAPPING_KEYS = ("cable_id", "cross_section", "target_length", "start", "end", "pulled_length", "date")
 
 
@@ -113,7 +128,10 @@ def update_dataset(
     if body.name:
         dataset.name = body.name.strip()
     if body.settings is not None:
-        merged = {**dataset.settings, **{k: v for k, v in body.settings.items() if k in _SETTING_KEYS}}
+        accepted = {k: v for k, v in body.settings.items() if k in _SETTING_KEYS}
+        if "table_layout" in accepted and accepted["table_layout"] is not None and not _valid_layout(accepted["table_layout"]):
+            del accepted["table_layout"]
+        merged = {**dataset.settings, **accepted}
         dataset.settings = merged
     new = [c.strip() for c in body.add_columns if c.strip() and c.strip() not in dataset.columns]
     if new:
@@ -124,7 +142,7 @@ def update_dataset(
     return dataset_out(db, user, dataset)
 
 
-@router.delete("/datasets/{dataset_id}", status_code=204)
+@router.delete("/datasets/{dataset_id}", status_code=204, response_model=None)
 def delete_dataset(
     dataset_id: int, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)
 ) -> None:
@@ -190,7 +208,8 @@ def dataset_analysis(dataset_id: int, user: User = Depends(current_user), db: Se
     frame = tabular.build_dataframe(dataset.columns, _live_rows(db, dataset))
     columns = CableColumns(**{k: mapping.get(k) or "" for k in MAPPING_KEYS})
     result = analyze(frame, columns, bool(dataset.settings.get("ignore_short")),
-                     float(dataset.settings.get("min_length") or 0))
+                     float(dataset.settings.get("min_length") or 0),
+                     bool(dataset.settings.get("ignore_no_target")))
 
     def stats(g) -> dict:
         return {"label": g.label, "total": g.total, "done": g.done, "open": g.open,
@@ -231,7 +250,7 @@ def create_share(
             "mode": link.mode}
 
 
-@router.delete("/datasets/{dataset_id}/shares/{share_id}", status_code=204)
+@router.delete("/datasets/{dataset_id}/shares/{share_id}", status_code=204, response_model=None)
 def revoke_share(
     dataset_id: int, share_id: int, request: Request,
     user: User = Depends(current_user), db: Session = Depends(get_db),

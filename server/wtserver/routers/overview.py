@@ -58,12 +58,13 @@ def dataset_overview(db: Session, dataset: Dataset) -> dict[str, Any]:
     frame = load_frame(db, dataset)
     ignore = bool(dataset.settings.get("ignore_short"))
     min_length = float(dataset.settings.get("min_length") or 0)
+    no_target = bool(dataset.settings.get("ignore_no_target"))
     cols = CableColumns(**{k: mapping.get(k) or "" for k in MAPPING_KEYS})
-    result = forecast(frame, mapping, ignore, min_length)
+    result = forecast(frame, mapping, ignore, min_length, no_target)
     out["sections"] = [_section(s) for s in result.sections]
     out["total"] = _section(result.total)
     out["has_routes"] = bool(mapping.get("target1") in dataset.columns or mapping.get("target2") in dataset.columns)
-    analysis = analyze(frame, cols, ignore, min_length)
+    analysis = analyze(frame, cols, ignore, min_length, no_target)
     out["ignored"] = analysis.ignored
     labeled = label_columns(dataset)
     if labeled:
@@ -93,7 +94,7 @@ def forecast_rows(dataset_id: int, user: User = Depends(current_user), db: Sessi
     if not cable_ready(dataset):
         raise HTTPException(status.HTTP_409_CONFLICT, "Spaltenzuordnung für den Kabelzug ist unvollständig.")
     result = forecast(load_frame(db, dataset), _mapping(dataset), bool(dataset.settings.get("ignore_short")),
-                      float(dataset.settings.get("min_length") or 0))
+                      float(dataset.settings.get("min_length") or 0), bool(dataset.settings.get("ignore_no_target")))
     return {"rows": {str(i): {"length": r.length, "basis": r.basis} for i, r in result.rows.items()}}
 
 
@@ -116,7 +117,7 @@ def write_forecast(
     column = mapping["forecast"]
     frame = load_frame(db, dataset)
     result = forecast(frame, mapping, bool(dataset.settings.get("ignore_short")),
-                      float(dataset.settings.get("min_length") or 0))
+                      float(dataset.settings.get("min_length") or 0), bool(dataset.settings.get("ignore_no_target")))
     patch: dict[int, dict[str, Any]] = {}
     for row_id, item in result.rows.items():
         if item.basis == "done" or item.length is None:

@@ -120,7 +120,7 @@ def update_project(
     return project_out(db, user, project)
 
 
-@router.delete("/{project_id}", status_code=204)
+@router.delete("/{project_id}", status_code=204, response_model=None)
 def delete_project(
     project_id: int, request: Request,
     user: User = Depends(current_user), db: Session = Depends(get_db),
@@ -163,7 +163,7 @@ def set_member(
     return {"user_id": target.id, "username": target.username, "role": body.role}
 
 
-@router.delete("/{project_id}/members/{user_id}", status_code=204)
+@router.delete("/{project_id}/members/{user_id}", status_code=204, response_model=None)
 def remove_member(
     project_id: int, user_id: int, request: Request,
     user: User = Depends(current_user), db: Session = Depends(get_db),
@@ -251,7 +251,7 @@ def download_file(
     return FileResponse(path, filename=path.name)
 
 
-@router.delete("/{project_id}/files/{name}", status_code=204)
+@router.delete("/{project_id}/files/{name}", status_code=204, response_model=None)
 def delete_file(
     project_id: int, name: str, request: Request,
     user: User = Depends(current_user), db: Session = Depends(get_db),
