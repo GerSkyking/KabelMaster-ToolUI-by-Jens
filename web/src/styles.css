@@ -252,3 +252,5 @@ main { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16
   .resizer::after { right: 12px; }
 }
 @media (max-width: 700px) { main { padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); } }
+table.data th { -webkit-touch-callout: none; user-select: none; }
+table.data th.dragging { background: var(--sel); }

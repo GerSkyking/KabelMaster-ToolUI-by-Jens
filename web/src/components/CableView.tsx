@@ -80,6 +80,7 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
   const [sections, setSections] = useState<Set<string> | null>(initialView.sections && new Set(initialView.sections));
   const [targets, setTargets] = useState<Set<string> | null>(initialView.targets && new Set(initialView.targets));
   const [dragCol, setDragCol] = useState<string | null>(null);
+  const touchDrag = useRef<{ timer?: number; active: boolean; over?: string }>({ active: false });
   const [groupBy, setGroupBy] = useState<GroupBy>("section");
   const [allDone, setAllDone] = useState(false);
   const endKey = `cable-lastend:${backend.key}`;
@@ -196,6 +197,34 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
   const tableWidth = layout.cols.reduce((sum, k) => sum + layout.width(k), 0);
 
   // Spaltenbreite per Ziehen am rechten Rand der Überschrift
+  // Spalten per Finger umsortieren: Kopfzelle lange drücken, dann auf die Zielspalte ziehen
+  const colAt = (x: number, y: number) => (document.elementFromPoint(x, y) as HTMLElement | null)?.closest<HTMLElement>("th[data-col]")?.dataset.col;
+  const headTouchDown = (c: string, e: React.PointerEvent) => {
+    if (e.pointerType === "mouse") return;
+    const t = touchDrag.current;
+    window.clearTimeout(t.timer);
+    t.active = false;
+    t.timer = window.setTimeout(() => { t.active = true; t.over = c; setDragCol(c); navigator.vibrate?.(20); }, 450);
+  };
+  const headTouchMove = (e: React.PointerEvent) => {
+    const t = touchDrag.current;
+    if (!t.active) { if (Math.abs(e.movementX) + Math.abs(e.movementY) > 6) window.clearTimeout(t.timer); return; }
+    t.over = colAt(e.clientX, e.clientY) ?? t.over;
+  };
+  const headTouchEnd = () => {
+    const t = touchDrag.current;
+    window.clearTimeout(t.timer);
+    if (t.active && dragCol && t.over) layout.moveTo(dragCol, t.over);
+    t.active = false;
+    setDragCol(null);
+  };
+  useEffect(() => {
+    // Während des Ziehens darf die Tabelle nicht mitscrollen
+    const block = (e: TouchEvent) => { if (touchDrag.current.active) e.preventDefault(); };
+    document.addEventListener("touchmove", block, { passive: false });
+    return () => document.removeEventListener("touchmove", block);
+  }, []);
+
   const startResize = (key: string, e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -422,6 +451,13 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:2p
 th{background:#eee}thead{display:table-header-group}tr{page-break-inside:avoid}tr.ign td{color:#888}</style>
 <h3>${title}</h3><p>${escapeHtml(viewDescription() || "Alle Kabel")} · ${visible.length} Kabel · ${new Date().toLocaleDateString("de-DE")}</p>
 <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    if (window.matchMedia("(pointer: coarse)").matches) {
+      // Smartphone/Tablet: Drucken im versteckten iframe ist dort unzuverlässig, also eigene Seite öffnen (Teilen > Drucken)
+      const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+      if (!window.open(url, "_blank")) alert("Das Pop-up wurde blockiert. Bitte erlauben oder die CSV-Ausgabe nutzen.");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      return;
+    }
     const frame = document.createElement("iframe");
     frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
     frame.onload = () => {
@@ -664,14 +700,15 @@ th{background:#eee}thead{display:table-header-group}tr{page-break-inside:avoid}t
               <thead>
                 <tr>
                   {layout.cols.map((c) => (
-                    <th key={c} style={{ width: layout.width(c) }} title={`${labelOf(c)} (zum Umsortieren ziehen)`} draggable
+                    <th key={c} data-col={c} style={{ width: layout.width(c) }} title={`${labelOf(c)} (zum Umsortieren ziehen)`} draggable
+                      onPointerDown={(e) => headTouchDown(c, e)} onPointerMove={headTouchMove} onPointerUp={headTouchEnd} onPointerCancel={headTouchEnd}
                       className={dragCol === c ? "dragging" : ""}
                       onDragStart={(e) => { setDragCol(c); e.dataTransfer.setData("text/plain", c); }}
                       onDragEnd={() => setDragCol(null)}
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => { e.preventDefault(); layout.moveTo(e.dataTransfer.getData("text/plain"), c); setDragCol(null); }}>
                       <span className="th-text">{labelOf(c)}</span>
-                      <span className="resizer" onPointerDown={(e) => startResize(c, e)} onClick={(e) => e.stopPropagation()} aria-hidden />
+                      <span className="resizer" onPointerDown={(e) => { e.stopPropagation(); startResize(c, e); }} onClick={(e) => e.stopPropagation()} aria-hidden />
                     </th>
                   ))}
                 </tr>
