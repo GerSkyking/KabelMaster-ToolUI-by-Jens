@@ -82,6 +82,8 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
   const [dragCol, setDragCol] = useState<string | null>(null);
   const [groupBy, setGroupBy] = useState<GroupBy>("section");
   const [allDone, setAllDone] = useState(false);
+  const endKey = `cable-lastend:${backend.key}`;
+  const [lastEnd, setLastEnd] = useState(() => { try { return localStorage.getItem(endKey) ?? ""; } catch { return ""; } });
   const [undo, setUndo] = useState<{ id: number; patch: Record<string, unknown> } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -284,6 +286,10 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
       Object.entries(next).filter(([k, v]) => display(v) !== display(selected.data[k])),
     );
     dirty.current = false;
+    if (endText.trim()) {
+      setLastEnd(endText.trim());
+      try { localStorage.setItem(endKey, endText.trim()); } catch { /* Speicher gesperrt */ }
+    }
     if (Object.keys(patch).length) await ds.edit(selected.id, patch);
   }, [selected, canEdit, complete, mapping, startText, endText, dateText, autoDate, ds]);
 
@@ -337,6 +343,22 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
   }, [step]);
 
   const length = computeLength(startText, endText);
+  // Letzte eingegebene Bis-Zahl (sonst das Bis des vorherigen Kabels in der Liste) als Von übernehmen
+  const previousEnd = (() => {
+    const index = visible.findIndex((r) => r.id === selectedId);
+    for (let i = index - 1; i >= 0 && mapping.end; i--) {
+      const v = display(visible[i].data[mapping.end]).trim();
+      if (v) return v;
+    }
+    return "";
+  })();
+  const takeEnd = lastEnd || previousEnd;
+  const takeLastEnd = (
+    <button type="button" disabled={!canEdit || !takeEnd} title="Letzte Bis-Zahl als Von übernehmen"
+      onClick={() => { dirty.current = true; setStartText(takeEnd); setTimeout(() => endRef.current?.focus(), 0); }}>
+      Von = {takeEnd || "–"}
+    </button>
+  );
   const warning = selected && complete ? plausibility(selected.data[mapping.target_length!], startText, endText) : null;
 
   const resetCable = () => {
@@ -568,6 +590,7 @@ th{background:#eee}thead{display:table-header-group}tr{page-break-inside:avoid}t
                     onBlur={() => void commit()} />
                 </label>
                 <div className="length"><span>Länge</span><b>{length === null ? "–" : `${formatNumber(length)} m`}</b></div>
+                {!mapping.date && <div className="span2">{takeLastEnd}</div>}
                 {mapping.date && (
                   <label className="span2">Datum (TT.MM.JJ)
                     <span className="inline">
@@ -576,6 +599,7 @@ th{background:#eee}thead{display:table-header-group}tr{page-break-inside:avoid}t
                         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void finish(); } }}
                         onBlur={() => void commit()} />
                       <button type="button" disabled={!canEdit} onClick={() => { dirty.current = true; setDateText(shortDate()); setTimeout(() => dateRef.current?.focus(), 0); }}>Heute</button>
+                      {takeLastEnd}
                     </span>
                   </label>
                 )}
