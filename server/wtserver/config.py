@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     secret_key: str = _DEFAULT_SECRET
     base_url: str = "http://localhost:8000"  # öffentliche URL (für OIDC-Callbacks und Share-Links)
     cookie_secure: bool = False
-    session_hours: int = 12
+    session_hours: int = 24 * 30  # angemeldet bleiben: 30 Tage, jede App-Nutzung verlängert (siehe /api/auth/me)
     cors_origins: str = ""  # Komma-getrennt, nur für getrenntes Frontend (Dev)
     max_upload_mb: int = 50
     share_default_hours: int = 72

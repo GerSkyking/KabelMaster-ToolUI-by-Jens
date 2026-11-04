@@ -144,7 +144,10 @@ def logout(response: Response) -> dict:
 
 
 @router.get("/me")
-def me(user: User = Depends(current_user)) -> dict:
+def me(request: Request, response: Response, user: User = Depends(current_user),
+       settings: Settings = Depends(get_settings)) -> dict:
+    if getattr(request.state, "auth_method", "") == "session":
+        set_session_cookie(response, user, settings)  # gleitende Sitzung: wer die App nutzt, bleibt angemeldet
     return user_payload(user)
 
 
