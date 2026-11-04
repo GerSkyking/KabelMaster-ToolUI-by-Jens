@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./auth";
 import { AccountPage } from "./pages/AccountPage";
@@ -14,6 +14,7 @@ import { SharePage } from "./pages/SharePage";
 import { ShopPage } from "./pages/ShopPage";
 import { TemplatesPage } from "./pages/TemplatesPage";
 import { WorklogPage } from "./pages/WorklogPage";
+import { backendForKey, keysWithPendingChanges, syncDataset } from "./sync";
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { status } = useAuth();
@@ -23,8 +24,42 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/** Überträgt liegengebliebene Änderungen auch dann, wenn die Liste gerade nicht geöffnet ist (App neu gestartet, Seite gewechselt). */
+function usePendingFlush(enabled: boolean) {
+  useEffect(() => {
+    if (!enabled) return;
+    let stopped = false;
+    const flush = async () => {
+      if (stopped || !navigator.onLine) return;
+      try {
+        for (const key of await keysWithPendingChanges()) {
+          const backend = backendForKey(key);
+          if (backend) await syncDataset(backend).catch(() => undefined); // bleibt lokal gespeichert und wird später erneut versucht
+        }
+      } catch { /* Speicher nicht lesbar: nichts zu tun */ }
+    };
+    void flush();
+    const timer = window.setInterval(() => void flush(), 60_000);
+    const onVisible = () => document.visibilityState === "visible" && void flush();
+    window.addEventListener("online", flush);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      window.removeEventListener("online", flush);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [enabled]);
+}
+
 function Shell({ children }: { children: ReactNode }) {
   const { user, offline, expired, logout } = useAuth();
+  usePendingFlush(!!user);
+  const signOut = async () => {
+    const pending = await keysWithPendingChanges().catch(() => []);
+    if (pending.length && !confirm("Es gibt noch Änderungen, die nicht zum Server übertragen wurden (z. B. weil du offline bist). Sie bleiben auf diesem Gerät gespeichert, werden aber erst nach erneuter Anmeldung übertragen. Trotzdem abmelden?")) return;
+    await logout();
+  };
   return (
     <>
       <header className="top">
@@ -42,7 +77,7 @@ function Shell({ children }: { children: ReactNode }) {
         </nav>
         <span className="spacer" />
         <span className="muted who">{user?.display_name}</span>
-        <button onClick={() => void logout()}>Abmelden</button>
+        <button onClick={() => void signOut()}>Abmelden</button>
       </header>
       {offline && <div className="banner warn">Offline-Modus: Der Server ist nicht erreichbar. Gespeicherte Daten sind weiter nutzbar.</div>}
       {expired && !offline && <div className="banner warn">Die Sitzung ist abgelaufen. <Link to="/login">Neu anmelden</Link> - lokale Änderungen gehen nicht verloren.</div>}

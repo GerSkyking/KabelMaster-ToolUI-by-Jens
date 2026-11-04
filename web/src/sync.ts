@@ -56,7 +56,34 @@ async function fetchMeta(b: Backend): Promise<Pick<DatasetState, "id" | "project
   return { id: d.id, projectId: d.project_id, name: d.name, columns: d.columns, settings: d.settings, canEdit: d.role !== "viewer" };
 }
 
-export async function syncDataset(b: Backend): Promise<SyncReport> {
+const running = new Map<string, Promise<SyncReport>>();
+
+/** Ein Abgleich je Liste gleichzeitig: Seite, Hintergrund-Abgleich und Knopf teilen sich denselben Lauf. */
+export function syncDataset(b: Backend): Promise<SyncReport> {
+  const current = running.get(b.key);
+  if (current) return current;
+  const run = runSync(b).finally(() => running.delete(b.key));
+  running.set(b.key, run);
+  return run;
+}
+
+/** Backend zu einem lokal gespeicherten Datensatz-Schlüssel ("ds:<id>" | "share:<token>") */
+export function backendForKey(key: string): Backend | null {
+  if (key.startsWith("ds:")) return datasetBackend(Number(key.slice(3)));
+  if (key.startsWith("share:")) return shareBackend(key.slice(6));
+  return null;
+}
+
+/** Listen mit lokalen Änderungen, die noch nicht beim Server sind (Eintragungen, Einstellungen, neue Spalten) */
+export async function keysWithPendingChanges(): Promise<string[]> {
+  const db = await getDb();
+  const keys = new Set<string>();
+  for (const e of await db.getAll("outbox")) keys.add(e.dsKey);
+  for (const d of await db.getAll("datasets")) if (d.settingsDirty || d.pendingColumns.length) keys.add(d.key);
+  return [...keys];
+}
+
+async function runSync(b: Backend): Promise<SyncReport> {
   const db = await getDb();
   const report: SyncReport = { pushed: 0, conflicts: [], errors: [] };
   let state = await db.get("datasets", b.key);

@@ -9,6 +9,8 @@ import "./styles.css";
 import "./planning.css";
 
 registerSW({ immediate: true });
+// Browser bitten, den lokalen Speicher (Offline-Daten, nicht übertragene Änderungen) nicht von selbst zu löschen
+void navigator.storage?.persist?.().catch(() => undefined);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
