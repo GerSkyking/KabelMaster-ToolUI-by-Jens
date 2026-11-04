@@ -254,3 +254,7 @@ main { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16
 @media (max-width: 700px) { main { padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); } }
 table.data th { -webkit-touch-callout: none; user-select: none; }
 table.data th.dragging { background: var(--sel); }
+table.data th.sortable { cursor: pointer; }
+.sort-pick select { min-height: 40px; max-width: 200px; }
+@media print { * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+.update-card .update-summary { margin: 6px 0 0; }

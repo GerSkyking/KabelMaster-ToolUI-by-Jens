@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from wtserver import excel_styles
 from core.io.excel_reader import (
     EmptyFileError, ExcelReader, ExcelReadError, _engine_for, _normalize_columns,
 )
@@ -79,7 +80,9 @@ def read_rows(path: Path, sheet: str | None = None) -> tuple[list[str], list[dic
         return _rows_of(_read_csv(path))
     if not sheet:
         document = ExcelReader().load(path)
-        return _rows_of(document.dataframe)
+        columns, rows = _rows_of(document.dataframe)
+        excel_styles.attach(rows, excel_styles.read_styles(path, None, len(rows)))
+        return columns, rows
     try:
         frame = pd.read_excel(path, sheet_name=sheet, header=0, engine=_engine_for(path), dtype=object)
     except Exception as exc:  # noqa: BLE001
@@ -87,7 +90,9 @@ def read_rows(path: Path, sheet: str | None = None) -> tuple[list[str], list[dic
     if frame.shape[1] == 0:
         raise EmptyFileError(path)
     frame.columns = _normalize_columns(list(frame.columns))
-    return _rows_of(frame)
+    columns, rows = _rows_of(frame)
+    excel_styles.attach(rows, excel_styles.read_styles(path, sheet, len(rows)))
+    return columns, rows
 
 
 def read_workbook(path: Path) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]], str]:

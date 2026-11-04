@@ -1,6 +1,7 @@
 """Datensätze (importierte Excel-Listen): Metadaten, Zeilen, Synchronisation, Analyse, Export, Share-Links."""
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta
 from typing import Any, Literal
 from urllib.parse import quote
@@ -15,7 +16,8 @@ from core.io.excel_reader import ExcelImportError
 from wtserver import audit, tabular
 from wtserver.config import Settings, get_settings
 from wtserver.db import get_db
-from wtserver.models import Dataset, Row, ShareLink, User, purge_datasets, utcnow
+from wtserver.excel_styles import STYLE_KEY
+from wtserver.models import Dataset, Project, Row, RowChange, ShareLink, User, purge_datasets, utcnow
 from wtserver.routers.projects import project_file
 from wtserver.security import current_user, get_dataset, get_project, new_share_token, project_role
 from wtserver.sync import SyncRequest, apply_ops, row_out, rows_since
@@ -46,6 +48,17 @@ class ImportIn(BaseModel):
     name: str = ""
     mode: Literal["first", "sheet", "all"] = "first"  # erstes Blatt | ein Blatt | alle Blätter zu einer Liste
     sheet: str = ""
+
+
+class UpdateIn(BaseModel):
+    """Liste aus einer (neu hochgeladenen) Datei aktualisieren."""
+    file: str
+    mode: Literal["first", "sheet", "all"] = "first"
+    sheet: str = ""
+    key: str = ""  # Spalte, an der Zeilen wiedererkannt werden; leer = Kabelnummer aus der Zuordnung, sonst Reihenfolge
+    keep_inputs: bool = True  # in der App eingetragene Werte (Von/Bis/gezogen/Datum) nicht überschreiben
+    remove_missing: bool = False  # Zeilen, die in der Datei fehlen, entfernen
+    dry_run: bool = False  # nur zählen, nichts ändern
 
 
 class DatasetPatch(BaseModel):
@@ -174,6 +187,127 @@ def sync_dataset(
                  {"ops": len(body.ops), "ok": changed, "via": getattr(request.state, "auth_method", "")})
     db.commit()
     return outcome
+
+
+def _empty(value: Any) -> bool:
+    return value is None or str(value).strip() == ""
+
+
+def _norm_key(value: Any) -> str:
+    return "" if _empty(value) else str(value).strip().casefold()
+
+
+@router.post("/datasets/{dataset_id}/update")
+def update_from_file(
+    dataset_id: int, body: UpdateIn, request: Request,
+    user: User = Depends(current_user), db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Aktualisiert die Liste aus einer neuen Version der Excel-Datei: bestehende Zeilen bleiben erhalten (samt
+    Fortschritt), geänderte Werte werden übernommen, neue Zeilen ergänzt, fehlende auf Wunsch entfernt."""
+    dataset = get_dataset(db, user, dataset_id, "editor")
+    path = project_file(settings, dataset.project, body.file)
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Datei nicht gefunden.")
+    extra_settings: dict[str, Any] = {}
+    try:
+        if body.mode == "all":
+            columns, new_rows, sheets, sheet_column = tabular.read_workbook(path)
+            extra_settings = {"sheets": sheets, "sheet_column": sheet_column}
+        elif body.mode == "sheet":
+            columns, new_rows = tabular.read_rows(path, body.sheet)
+        else:
+            columns, new_rows = tabular.read_rows(path)
+    except ExcelImportError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    mapping = dataset.settings.get("mapping") or {}
+    key_column = body.key or mapping.get("cable_id") or ""
+    if key_column and (key_column not in columns or key_column not in dataset.columns):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"Die Schlüsselspalte „{key_column}“ fehlt in der Datei oder in der Liste.")
+    keep_columns = {mapping.get(k) for k in ("start", "end", "pulled_length", "date")} - {None, ""} if body.keep_inputs else set()
+
+    project = db.scalar(select(Project).where(Project.id == dataset.project_id).with_for_update())
+    seq = project.seq
+    now, actor = utcnow(), user.username
+    batch = uuid.uuid4().hex[:16]
+    existing = list(db.scalars(select(Row).where(Row.dataset_id == dataset.id, Row.deleted.is_(False)).order_by(Row.idx, Row.id)))
+    pool: dict[str, list[Row]] = {}
+    for row in existing:
+        pool.setdefault(_norm_key(row.data.get(key_column)) if key_column else str(row.idx), []).append(row)
+
+    counts = {"updated": 0, "unchanged": 0, "added": 0, "removed": 0, "kept_missing": 0, "unkeyed": 0}
+    matched: set[int] = set()
+    inserts: list[dict[str, Any]] = []
+    for position, new in enumerate(new_rows):
+        k = _norm_key(new.get(key_column)) if key_column else str(position)
+        candidates = pool.get(k) if k else None
+        old = candidates.pop(0) if candidates else None
+        if old is None:
+            if key_column and not k:
+                counts["unkeyed"] += 1
+            counts["added"] += 1
+            inserts.append({"idx": position, "data": new})
+            continue
+        matched.add(old.id)
+        data = dict(old.data)
+        for column in columns:
+            if column in keep_columns and not _empty(old.data.get(column)):
+                continue  # Eintrag aus der App behalten
+            data[column] = new.get(column)
+        if STYLE_KEY in new:
+            data[STYLE_KEY] = new[STYLE_KEY]
+        else:
+            data.pop(STYLE_KEY, None)
+        if data == old.data and old.idx == position:
+            counts["unchanged"] += 1
+            continue
+        for column in columns:
+            if data.get(column) != old.data.get(column):
+                db.add(RowChange(dataset_id=dataset.id, row_id=old.id, field=column, old=old.data.get(column),
+                                 new=data.get(column), kind="import", batch=batch, by=actor))
+        seq += 1
+        old.data, old.idx = data, position
+        old.rev, old.seq, old.updated_by, old.updated_at = old.rev + 1, seq, actor, now
+        counts["updated"] += 1
+
+    for row in existing:
+        if row.id in matched:
+            continue
+        if body.remove_missing:
+            seq += 1
+            row.deleted, row.rev, row.seq, row.updated_by, row.updated_at = True, row.rev + 1, seq, actor, now
+            db.add(RowChange(dataset_id=dataset.id, row_id=row.id, field="*", old=None, new=None, kind="delete",
+                             batch=batch, by=actor))
+            counts["removed"] += 1
+        else:
+            counts["kept_missing"] += 1
+
+    if inserts:
+        seq += 1
+        db.execute(insert(Row), [{"dataset_id": dataset.id, "idx": item["idx"], "data": item["data"], "rev": 1, "seq": seq,
+                                  "deleted": False, "updated_at": now, "updated_by": actor} for item in inserts])
+    added_columns = [c for c in columns if c not in dataset.columns]
+    if added_columns:
+        dataset.columns = [*dataset.columns, *added_columns]
+        seq += 1
+    counts["new_columns"] = added_columns  # type: ignore[assignment]
+    counts["key"] = key_column  # type: ignore[assignment]
+
+    if body.dry_run:
+        db.rollback()
+        db.refresh(user)  # nach dem Rollback abgelaufen; die Middleware liest ihn noch
+        return {**counts, "dry_run": True}
+    project.seq = max(project.seq, seq)
+    dataset.source_file = path.name
+    if extra_settings:
+        dataset.settings = {**dataset.settings, **extra_settings}
+    dataset.updated_at = now
+    audit.record(db, request, "dataset_updated_from_file", user, f"dataset:{dataset.id}",
+                 {"file": path.name, **{k: v for k, v in counts.items() if isinstance(v, int)}})
+    db.commit()
+    return {**counts, "dry_run": False}
 
 
 def _live_rows(db: Session, dataset: Dataset) -> list[dict[str, Any]]:

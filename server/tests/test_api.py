@@ -249,3 +249,64 @@ def test_security_headers(client):
     r = client.get("/api/health")
     assert r.headers["x-content-type-options"] == "nosniff"
     assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+
+
+def _upload_xlsx(admin: TestClient, project_id: int, name: str, build) -> None:
+    from openpyxl import Workbook
+    book = Workbook()
+    sheet = book.active
+    build(sheet)
+    buffer = io.BytesIO()
+    book.save(buffer)
+    r = admin.post(f"/api/projects/{project_id}/files", files={"file": (name, buffer.getvalue())})
+    assert r.status_code == 201, r.text
+
+
+def test_excel_cell_colors_are_imported(admin):
+    from openpyxl.styles import Font, PatternFill
+    project = admin.post("/api/projects", json={"name": "Farben"}).json()
+
+    def build(ws):
+        ws.append(["Kabel", "Länge"])
+        ws.append(["W1", 10])
+        ws.append(["W2", 20])
+        ws["A2"].fill = PatternFill("solid", fgColor="FFFF0000")
+        ws["B3"].font = Font(color="FF0000FF")
+
+    _upload_xlsx(admin, project["id"], "farben.xlsx", build)
+    ds = admin.post(f"/api/projects/{project['id']}/datasets", json={"file": "farben.xlsx"}).json()
+    data = rows(admin, ds["id"])["rows"]
+    assert data[0]["data"]["__style"] == {"Kabel": ["#ff0000", ""]}
+    assert data[1]["data"]["__style"] == {"Länge": ["", "#0000ff"]}
+    assert "__style" not in ds["columns"]
+
+
+def test_update_dataset_from_new_file(admin, dataset):
+    pid, did = dataset["project_id"], dataset["id"]
+    # Fortschritt in der App
+    first = rows(admin, did)["rows"][0]
+    admin.patch(f"/api/datasets/{did}", json={"settings": {"mapping": MAPPING}})
+    r = admin.post(f"/api/datasets/{did}/sync", json={"ops": [
+        {"id": first["id"], "base_rev": first["rev"], "base": {"Von": None}, "patch": {"Von": 5, "Bis": 15}}]})
+    assert r.json()["results"][0]["status"] == "ok"
+
+    def build(ws):
+        ws.append(["Kabel", "Querschnitt", "Länge", "Von", "Bis", "Ist", "Datum", "Neu"])
+        ws.append(["W1", "3x1,5", 12, 100, 200, None, None, "a"])  # Länge geändert, Von/Bis der Datei sollen den Fortschritt nicht überschreiben
+        ws.append(["W3", "5x2,5", 20, None, None, None, None, "c"])
+        ws.append(["W5", "5x2,5", 40, None, None, None, None, "e"])  # neu; W2 und W4 fehlen
+
+    _upload_xlsx(admin, pid, "neu.xlsx", build)
+    preview = admin.post(f"/api/datasets/{did}/update", json={"file": "neu.xlsx", "dry_run": True}).json()
+    assert preview["updated"] == 2 and preview["added"] == 1 and preview["kept_missing"] == 2 and preview["dry_run"]
+    assert len(rows(admin, did)["rows"]) == 4  # Vorschau ändert nichts
+
+    done = admin.post(f"/api/datasets/{did}/update", json={"file": "neu.xlsx", "remove_missing": True}).json()
+    assert done["removed"] == 2 and done["added"] == 1 and done["new_columns"] == ["Neu"]
+    data = {r["data"]["Kabel"]: r["data"] for r in rows(admin, did)["rows"]}
+    assert set(data) == {"W1", "W3", "W5"}
+    assert data["W1"]["Länge"] == 12 and data["W1"]["Von"] == 5 and data["W1"]["Bis"] == 15  # App-Eingaben bleiben
+    assert data["W5"]["Neu"] == "e"
+    assert "Neu" in admin.get(f"/api/datasets/{did}").json()["columns"]
+    # Clients holen die Änderungen inkrementell (inkl. gelöschter Zeilen)
+    assert any(r["deleted"] for r in rows(admin, did, since=1)["rows"])

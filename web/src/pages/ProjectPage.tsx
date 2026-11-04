@@ -2,6 +2,7 @@ import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, download, errorText, upload } from "../api";
 import { Notes } from "../components/Notes";
+import { UpdateFromFile } from "../components/UpdateFromFile";
 import { datasetBackend, syncDataset } from "../sync";
 import { ProjectOverview } from "./ProjectOverview";
 import type { ProjectSummary } from "./ProjectsPage";
@@ -12,6 +13,15 @@ interface Member { user_id: number; username: string; display_name: string; role
 
 const size = (bytes: number) => (bytes > 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.ceil(bytes / 1e3)} kB`);
 const stamp = (seconds: number) => new Date(seconds * 1000).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" });
+
+/** Spaltenliste der Liste holen und das Aktualisieren-Fenster zeigen */
+function ListUpdate({ listId, projectId, onClose }: { listId: number; projectId: number; onClose: () => void }) {
+  const [columns, setColumns] = useState<string[] | null>(null);
+  useEffect(() => {
+    api<{ columns: string[] }>(`/api/datasets/${listId}`).then((d) => setColumns(d.columns)).catch(() => setColumns([]));
+  }, [listId]);
+  return columns ? <UpdateFromFile datasetId={listId} projectId={projectId} columns={columns} onClose={onClose} /> : <p className="muted">Lade …</p>;
+}
 
 export function ProjectPage() {
   const { id } = useParams();
@@ -26,6 +36,7 @@ export function ProjectPage() {
   const [busy, setBusy] = useState("");
   const [projectName, setProjectName] = useState("");
   const [projectDescription, setProjectDescription] = useState("");
+  const [updating, setUpdating] = useState<number | null>(null);
   const [choice, setChoice] = useState<{ file: string; sheets: string[] } | null>(null);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -178,8 +189,10 @@ export function ProjectPage() {
             <li key={d.id}>
               <Link to={`/datasets/${d.id}`}>{d.name}</Link>{" "}
               {editor && <button onClick={() => renameList(d.id, d.name)}>Umbenennen</button>}
+              {editor && <button className={updating === d.id ? "active" : ""} onClick={() => setUpdating(updating === d.id ? null : d.id)}>Aus Datei aktualisieren</button>}
               <button onClick={() => void run(() => syncDataset(datasetBackend(d.id)), `${d.name} für Offline-Nutzung geladen.`)}>Offline bereithalten</button>
               {owner && <button className="danger" onClick={() => confirm(`Liste „${d.name}“ löschen?`) && void run(() => api(`/api/datasets/${d.id}`, { method: "DELETE" }))}>Löschen</button>}
+              {updating === d.id && <ListUpdate listId={d.id} projectId={Number(id)} onClose={() => setUpdating(null)} />}
             </li>
           ))}
           {!project.datasets.length && <li className="muted">Noch keine Liste - Excel-Datei hochladen und importieren.</li>}

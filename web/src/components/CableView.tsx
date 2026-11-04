@@ -4,6 +4,7 @@ import {
   parseNumber, percent, plausibility, rowState, sectionLabel, shortDate, RowState,
 } from "../cable";
 import type { LocalRow } from "../db";
+import { ColorMode, cellColors, hasColors, styleOf, useDark } from "../excelColors";
 import { Backend } from "../sync";
 import { useDataset } from "../useDataset";
 import { SectionFilter } from "./SectionFilter";
@@ -13,11 +14,21 @@ const RENDER_LIMIT = 300;
 type Filter = "all" | "open" | "done" | "ignored";
 const FILTERS: Filter[] = ["all", "open", "done", "ignored"];
 
-interface SavedView { filter: Filter; query: string; sections: string[] | null; targets: string[] | null }
+type SortDir = "asc" | "desc";
+interface SavedView { filter: Filter; query: string; sections: string[] | null; targets: string[] | null; sortCol: string; sortDir: SortDir }
+
+/** Zahlen als Zahlen, sonst "natürlich" (W2 vor W10); leere Werte immer zuletzt. */
+function compareCells(a: unknown, b: unknown, dir: SortDir): number {
+  const ta = display(a).trim(), tb = display(b).trim();
+  if (!ta || !tb) return ta === tb ? 0 : ta ? -1 : 1;
+  const na = parseNumber(a), nb = parseNumber(b);
+  const c = na !== null && nb !== null ? na - nb : ta.localeCompare(tb, "de", { numeric: true, sensitivity: "base" });
+  return dir === "asc" ? c : -c;
+}
 
 /** Filteransicht pro Gerät und Datensatz: übersteht Neuladen der Seite. */
 function loadView(key: string): SavedView {
-  const empty: SavedView = { filter: "all", query: "", sections: null, targets: null };
+  const empty: SavedView = { filter: "all", query: "", sections: null, targets: null, sortCol: "", sortDir: "asc" };
   try {
     const v = JSON.parse(localStorage.getItem(key) ?? "null");
     if (!v) return empty;
@@ -26,6 +37,7 @@ function loadView(key: string): SavedView {
       filter: FILTERS.includes(v.filter) ? v.filter : "all",
       query: typeof v.query === "string" ? v.query : "",
       sections: list(v.sections), targets: list(v.targets),
+      sortCol: typeof v.sortCol === "string" ? v.sortCol : "", sortDir: v.sortDir === "desc" ? "desc" : "asc",
     };
   } catch { return empty; }
 }
@@ -80,7 +92,14 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
   const [sections, setSections] = useState<Set<string> | null>(initialView.sections && new Set(initialView.sections));
   const [targets, setTargets] = useState<Set<string> | null>(initialView.targets && new Set(initialView.targets));
   const [dragCol, setDragCol] = useState<string | null>(null);
-  const touchDrag = useRef<{ timer?: number; active: boolean; over?: string }>({ active: false });
+  const touchDrag = useRef<{ timer?: number; active: boolean; over?: string; suppress: number }>({ active: false, suppress: 0 });
+  const [sortCol, setSortCol] = useState(initialView.sortCol);
+  const [sortDir, setSortDir] = useState<SortDir>(initialView.sortDir);
+  const colorKey = "cable-colors";
+  const [colorMode, setColorMode] = useState<ColorMode>(() => {
+    try { const v = localStorage.getItem(colorKey); return v === "original" || v === "off" ? v : "adapted"; } catch { return "adapted"; }
+  });
+  const dark = useDark();
   const [groupBy, setGroupBy] = useState<GroupBy>("section");
   const [allDone, setAllDone] = useState(false);
   const endKey = `cable-lastend:${backend.key}`;
@@ -117,11 +136,13 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
   useEffect(() => {
     try {
       localStorage.setItem(viewKey, JSON.stringify({
-        filter, query, sections: sections && [...sections], targets: targets && [...targets],
+        filter, query, sections: sections && [...sections], targets: targets && [...targets], sortCol, sortDir,
       }));
     } catch { /* Speicher gesperrt: Ansicht gilt nur für diese Sitzung */ }
-  }, [viewKey, filter, query, sections, targets]);
+  }, [viewKey, filter, query, sections, targets, sortCol, sortDir]);
+  useEffect(() => { try { localStorage.setItem(colorKey, colorMode); } catch { /* egal */ } }, [colorMode]);
 
+  const colorsPresent = useMemo(() => hasColors(rows), [rows]);
   const hasRouteColumns = !!((mapping.target1 && columns.includes(mapping.target1)) || (mapping.target2 && columns.includes(mapping.target2)));
   const targetOptions = useMemo(() => {
     const set = new Set<string>();
@@ -166,14 +187,20 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
       }
       if (complete && sections && !sections.has(sectionLabel(r.data, mapping))) continue;
       if (terms.length) {
-        const hay = [...Object.values(r.data).map(display), routeOf(r.data, mapping)].join(" ").toLowerCase();
+        const hay = [...Object.entries(r.data).filter(([k]) => !k.startsWith("__")).map(([, v]) => display(v)), routeOf(r.data, mapping)].join(" ").toLowerCase();
         if (!terms.every((t) => hay.includes(t))) continue;
       }
       (s === "ignored" ? ignored : active).push(r);
     }
+    if (sortCol && (sortCol === ROUTE_KEY || columns.includes(sortCol))) {
+      const value = (r: LocalRow) => (sortCol === ROUTE_KEY ? routeOf(r.data, mapping) : r.data[sortCol]);
+      const by = (a: LocalRow, b: LocalRow) => compareCells(value(a), value(b), sortDir);
+      active.sort(by);
+      ignored.sort(by);
+    }
     return [...active, ...ignored];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, filter, query, sections, targets, state?.settings, complete]);
+  }, [rows, filter, query, sections, targets, state?.settings, complete, sortCol, sortDir]);
 
   // Tabellenlayout (Reihenfolge, Sichtbarkeit, Breite) - je Gerät und Datensatz gespeichert
   const hasRoute = !!(mapping.target1 && columns.includes(mapping.target1)) || !!(mapping.target2 && columns.includes(mapping.target2));
@@ -197,6 +224,14 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
   const tableWidth = layout.cols.reduce((sum, k) => sum + layout.width(k), 0);
 
   // Spaltenbreite per Ziehen am rechten Rand der Überschrift
+  /** Antippen der Überschrift: aufwärts, nochmal abwärts, nochmal aus */
+  const toggleSort = (col: string) => {
+    if (sortCol !== col) { setSortCol(col); setSortDir("asc"); }
+    else if (sortDir === "asc") setSortDir("desc");
+    else setSortCol("");
+    setLimit(RENDER_LIMIT);
+  };
+
   // Spalten per Finger umsortieren: Kopfzelle lange drücken, dann auf die Zielspalte ziehen
   const colAt = (x: number, y: number) => (document.elementFromPoint(x, y) as HTMLElement | null)?.closest<HTMLElement>("th[data-col]")?.dataset.col;
   const headTouchDown = (c: string, e: React.PointerEvent) => {
@@ -215,6 +250,7 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
     const t = touchDrag.current;
     window.clearTimeout(t.timer);
     if (t.active && dragCol && t.over) layout.moveTo(dragCol, t.over);
+    if (t.active) t.suppress = Date.now(); // Loslassen nach dem Ziehen soll nicht als Antippen (Sortieren) zählen
     t.active = false;
     setDragCol(null);
   };
@@ -443,7 +479,11 @@ export function CableView({ backend, actions }: { backend: Backend; actions?: Re
     const head = layout.cols.map((c) => `<th>${escapeHtml(labelOf(c))}</th>`).join("");
     const body = visible.map((r) => {
       const ignored = complete && rowState(r.data, mapping, opts) === "ignored";
-      return `<tr${ignored ? " class=\"ign\"" : ""}>${layout.cols.map((c) => `<td>${escapeHtml(cellText(r.data, c))}</td>`).join("")}</tr>`;
+      return `<tr${ignored ? " class=\"ign\"" : ""}>${layout.cols.map((c) => {
+        const col = c === ROUTE_KEY ? {} : cellColors(styleOf(r.data, c), false, colorMode === "off" ? "off" : "adapted");
+        const css = [col.background && `background:${col.background}`, col.color && `color:${col.color}`].filter(Boolean).join(";");
+        return `<td${css ? ` style="${css}"` : ""}>${escapeHtml(cellText(r.data, c))}</td>`;
+      }).join("")}</tr>`;
     }).join("");
     const html = `<!doctype html><meta charset="utf-8"><title>${title}</title>
 <style>body{font:11px/1.3 sans-serif;margin:12px}h3{margin:0 0 4px}p{margin:0 0 8px;color:#555}
@@ -687,6 +727,23 @@ th{background:#eee}thead{display:table-header-group}tr{page-break-inside:avoid}t
                 {FILTER_LABEL[f]}
               </button>
             ))}
+            <label className="inline-num sort-pick">Sortieren
+              <select value={sortCol} onChange={(e) => { setSortCol(e.target.value); setLimit(RENDER_LIMIT); }}>
+                <option value="">Original-Reihenfolge</option>
+                {layoutDefaults.map((c) => <option key={c} value={c}>{labelOf(c)}</option>)}
+              </select>
+            </label>
+            <button type="button" disabled={!sortCol} onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+              aria-label={sortDir === "asc" ? "aufsteigend, zum Umkehren tippen" : "absteigend, zum Umkehren tippen"} title="Sortierrichtung umkehren">
+              {sortDir === "asc" ? "↑ auf" : "↓ ab"}
+            </button>
+            {colorsPresent && (
+              <label className="inline-num sort-pick" title="Zellfarben aus der Excel-Datei">Farben
+                <select value={colorMode} onChange={(e) => setColorMode(e.target.value as ColorMode)}>
+                  <option value="adapted">Angepasst</option><option value="original">Original</option><option value="off">Aus</option>
+                </select>
+              </label>
+            )}
             <span className="muted">{visible.length} Zeilen</span>
           </div>
           {filtered && (
@@ -700,14 +757,16 @@ th{background:#eee}thead{display:table-header-group}tr{page-break-inside:avoid}t
               <thead>
                 <tr>
                   {layout.cols.map((c) => (
-                    <th key={c} data-col={c} style={{ width: layout.width(c) }} title={`${labelOf(c)} (zum Umsortieren ziehen)`} draggable
+                    <th key={c} data-col={c} style={{ width: layout.width(c) }} title={`${labelOf(c)} – antippen zum Sortieren, ziehen zum Umsortieren`} draggable
                       onPointerDown={(e) => headTouchDown(c, e)} onPointerMove={headTouchMove} onPointerUp={headTouchEnd} onPointerCancel={headTouchEnd}
-                      className={dragCol === c ? "dragging" : ""}
+                      aria-sort={sortCol === c ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
+                      onClick={() => { if (Date.now() - touchDrag.current.suppress > 400) toggleSort(c); }}
+                      className={`${dragCol === c ? "dragging " : ""}sortable`}
                       onDragStart={(e) => { setDragCol(c); e.dataTransfer.setData("text/plain", c); }}
                       onDragEnd={() => setDragCol(null)}
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => { e.preventDefault(); layout.moveTo(e.dataTransfer.getData("text/plain"), c); setDragCol(null); }}>
-                      <span className="th-text">{labelOf(c)}</span>
+                      <span className="th-text">{labelOf(c)}{sortCol === c ? (sortDir === "asc" ? " ▲" : " ▼") : ""}</span>
                       <span className="resizer" onPointerDown={(e) => { e.stopPropagation(); startResize(c, e); }} onClick={(e) => e.stopPropagation()} aria-hidden />
                     </th>
                   ))}
@@ -719,7 +778,8 @@ th{background:#eee}thead{display:table-header-group}tr{page-break-inside:avoid}t
                     onClick={() => void select(r.id)}>
                     {layout.cols.map((c, i) => {
                       const t = cellText(r.data, c);
-                      return <td key={c} title={t}>{i === 0 && rowWarning(r) ? <span className="warn-mark" title={rowWarning(r)!}>⚠ </span> : null}{t}</td>;
+                      const colors = c === ROUTE_KEY ? {} : cellColors(styleOf(r.data, c), dark, colorMode);
+                      return <td key={c} title={t} style={colors}>{i === 0 && rowWarning(r) ? <span className="warn-mark" title={rowWarning(r)!}>⚠ </span> : null}{t}</td>;
                     })}
                   </tr>
                 ))}

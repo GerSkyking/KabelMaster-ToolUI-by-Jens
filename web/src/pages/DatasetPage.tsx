@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, download } from "../api";
 import { useAuth } from "../auth";
 import { CableView } from "../components/CableView";
+import { UpdateFromFile } from "../components/UpdateFromFile";
 import { DatasetState, getDb } from "../db";
 import { datasetBackend } from "../sync";
 import { CabinetTool } from "../tools/CabinetTool";
@@ -94,6 +95,7 @@ export function DatasetPage() {
   const { user } = useAuth();
   const backend = useMemo(() => datasetBackend(datasetId), [datasetId]);
   const [showShare, setShowShare] = useState(false);
+  const [showUpdate, setShowUpdate] = useState(false);
   const [error, setError] = useState("");
   const [meta, setMeta] = useState<DatasetState | null>(null);
   const [conflicts, setConflicts] = useState(0);
@@ -146,6 +148,9 @@ export function DatasetPage() {
         ))}
       </nav>
       {showShare && <SharePanel datasetId={datasetId} />}
+      {showUpdate && meta?.projectId && (
+        <UpdateFromFile datasetId={datasetId} projectId={meta.projectId} columns={meta.columns} onClose={() => setShowUpdate(false)} />
+      )}
       <div hidden={tab !== "cable"}>
         <CableView
           backend={backend}
@@ -153,6 +158,7 @@ export function DatasetPage() {
             <>
               <button onClick={() => download(`/api/datasets/${datasetId}/export`, `liste-${datasetId}.xlsx`).catch((e) => setError(String(e.message ?? e)))}>Excel-Export</button>
               <button onClick={() => setShowShare((v) => !v)}>Teilen</button>
+              {meta?.canEdit && meta.projectId && <button className={showUpdate ? "active" : ""} onClick={() => setShowUpdate((v) => !v)}>Aus Datei aktualisieren</button>}
             </>
           }
         />
