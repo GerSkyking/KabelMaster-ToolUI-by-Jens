@@ -505,3 +505,37 @@ def test_restore_only_selected_columns(admin, dataset):
     assert done["applied"] and done["result"]["rows"] == 1
     first_row = next(r for r in rows(admin, dataset["id"])["rows"] if r["id"] == rid)
     assert first_row["data"].get("Ist") is None and first_row["data"].get("Von") == "X"  # Von blieb unberührt
+
+
+def test_restore_rows_individually(admin, dataset):
+    first = admin.post("/api/admin/backups", json={}).json()
+    zipped = admin.get(f"/api/admin/backups/{first['id']}/download").content
+    rid = row_id(admin, dataset["id"], "W1")
+    rid2 = row_id(admin, dataset["id"], "W2")
+    push(admin, dataset["id"], [
+        {"id": rid, "base_rev": 1, "patch": {"Ist": 99}, "base": {"Ist": None}},
+        {"id": rid2, "base_rev": 1, "patch": {"Ist": 55}, "base": {"Ist": None}},
+    ])
+    url = f"/api/datasets/{dataset['id']}/restore"
+    flags = {"update": "true", "add_rows": "false", "remove_rows": "false"}
+    prev = admin.post(url, files={"file": ("b.zip", zipped)}, data=flags).json()
+    items = prev["diff"]["items"]
+    assert len(items) == 2 and all(i["kind"] == "changed" for i in items)
+    keep = [items[0]["idx"]]
+    done = admin.post(url, files={"file": ("b.zip", zipped)}, data={**flags, "apply": "true", "only_rows": str(keep)}).json()
+    assert done["result"]["rows"] == 1
+    values = sorted(str(r["data"].get("Ist")) for r in rows(admin, dataset["id"])["rows"] if r["data"].get("Ist") is not None)
+    assert len(values) == 1  # nur eine der beiden Zeilen zurückgesetzt
+
+
+def test_restore_only_add_and_only_remove(admin, dataset):
+    first = admin.post("/api/admin/backups", json={}).json()
+    zipped = admin.get(f"/api/admin/backups/{first['id']}/download").content
+    rid = row_id(admin, dataset["id"], "W1")
+    admin.post(f"/api/datasets/{dataset['id']}/sync", json={"ops": [{"id": rid, "base_rev": 1, "deleted": True}]})
+    url = f"/api/datasets/{dataset['id']}/restore"
+    before = len(rows(admin, dataset["id"])["rows"])
+    done = admin.post(url, files={"file": ("b.zip", zipped)},
+                      data={"update": "false", "add_rows": "true", "remove_rows": "false", "apply": "true"}).json()
+    assert done["applied"] and done["result"]["added"] >= 0
+    assert len(rows(admin, dataset["id"])["rows"]) >= before

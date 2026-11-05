@@ -187,27 +187,44 @@ def find_dataset(data: dict[str, Any], slug: str, name: str, source: str = "") -
     return chosen, [{k: v for k, v in o.items() if k not in ("_item", "columns")} for o in options]
 
 
-def diff_dataset(current_columns: list[str], current_rows: list[dict[str, Any]], item: dict[str, Any],
-                 only: list[str] | None = None) -> dict[str, Any]:
-    """Was eine Wiederherstellung dieser Liste ändern würde (Zeilen über ihre Nummer zugeordnet)."""
-    before = {i: r for i, r in enumerate(current_rows)}
+def diff_dataset(current_columns: list[str], current_rows: dict[int, dict[str, Any]], item: dict[str, Any],
+                 only: list[str] | None = None, update: bool = True, add: bool = True, remove: bool = True,
+                 only_rows: set[int] | None = None) -> dict[str, Any]:
+    """Was eine Wiederherstellung dieser Liste ändern würde. Zeilen werden über ihre Nummer (idx) zugeordnet;
+    `update` = Werte ändern, `add` = fehlende Zeilen ergänzen, `remove` = überzählige Zeilen entfernen."""
     after = {r["idx"]: r["data"] for r in item["rows"]}
     changed = 0
-    for idx in before.keys() & after.keys():
-        for column in dict.fromkeys([*current_columns, *item["columns"]]):
-            if only and column not in only:
-                continue
-            x, y = before[idx].get(column), after[idx].get(column)
-            if x != y and not (x in (None, "") and y in (None, "")):
-                changed += 1
-    if only:  # nur Werte ändern, Zeilen bleiben wie sie sind
-        return {"rows_now": len(before), "rows_backup": len(after), "changed_cells": changed, "added": 0, "removed": 0,
-                "columns_added": [c for c in only if c in item["columns"] and c not in current_columns],
-                "columns_removed": [], "only_columns": only}
-    return {"rows_now": len(before), "rows_backup": len(after), "changed_cells": changed,
-            "added": len(after.keys() - before.keys()), "removed": len(before.keys() - after.keys()),
-            "columns_added": [c for c in item["columns"] if c not in current_columns],
-            "columns_removed": [c for c in current_columns if c not in item["columns"]]}
+    items: list[dict[str, Any]] = []
+
+    def label(data: dict[str, Any]) -> str:
+        return " | ".join(str(v) for k, v in data.items() if k != STYLE_KEY and v not in (None, ""))[:80]
+
+    if update:
+        for idx in sorted(current_rows.keys() & after.keys()):
+            cells = []
+            for column in dict.fromkeys([*current_columns, *item["columns"]]):
+                if only and column not in only:
+                    continue
+                x, y = current_rows[idx].get(column), after[idx].get(column)
+                if x != y and not (x in (None, "") and y in (None, "")):
+                    cells.append(column)
+            if cells:
+                items.append({"idx": idx, "kind": "changed", "label": label(after[idx]), "columns": cells})
+    if add:
+        items += [{"idx": i, "kind": "added", "label": label(after[i]), "columns": []} for i in sorted(after.keys() - current_rows.keys())]
+    if remove:
+        items += [{"idx": i, "kind": "removed", "label": label(current_rows[i]), "columns": []} for i in sorted(current_rows.keys() - after.keys())]
+    if only_rows is not None:
+        items = [i for i in items if i["idx"] in only_rows]
+    changed = sum(len(i["columns"]) for i in items)
+    added = sum(i["kind"] == "added" for i in items)
+    removed = sum(i["kind"] == "removed" for i in items)
+    wanted = [c for c in (only or item["columns"]) if c in item["columns"]]
+    return {"rows_now": len(current_rows), "rows_backup": len(after), "changed_cells": changed,
+            "added": added, "removed": removed, "items": items[:1000], "items_total": len(items),
+            "columns_added": [c for c in wanted if c not in current_columns] if (update or add) else [],
+            "columns_removed": [c for c in current_columns if c not in item["columns"]] if not only and update and add and remove else [],
+            "only_columns": only or []}
 
 
 def restore_dataset(db: Session, settings: Settings, project: Project, dataset: Dataset, item: dict[str, Any],
@@ -224,21 +241,34 @@ def restore_dataset(db: Session, settings: Settings, project: Project, dataset: 
     return {"dataset": dataset.name, "rows": rows}
 
 
-def restore_columns(db: Session, settings: Settings, project: Project, dataset: Dataset, item: dict[str, Any],
-                    columns: list[str], actor: str) -> dict[str, Any]:
-    """Nur ausgewählte Spalten aus der Sicherung zurückholen. Zeilen werden über ihre Nummer zugeordnet, es werden
-    keine Zeilen angelegt oder entfernt; alles andere bleibt unverändert."""
-    columns = [c for c in columns if c in item["columns"]]
+def restore_merge(db: Session, settings: Settings, project: Project, dataset: Dataset, item: dict[str, Any],
+                  columns: list[str] | None, update: bool, add: bool, remove: bool, actor: str,
+                  only_rows: set[int] | None = None) -> dict[str, Any]:
+    """Liste teilweise aus der Sicherung zurückholen. Zeilen werden über ihre Nummer zugeordnet.
+    `update`: Werte der gewählten Spalten (leer = alle) in vorhandenen Zeilen zurücksetzen;
+    `add`: Zeilen ergänzen, die es in der Sicherung gibt, aber jetzt nicht mehr;
+    `remove`: Zeilen entfernen, die es in der Sicherung nicht gibt. Alles andere bleibt unverändert."""
+    columns = [c for c in (columns or item["columns"]) if c in item["columns"]]
     create_backup(db, settings, "pre-restore", actor, project_ids=[project.id])
     project = db.scalar(select(Project).where(Project.id == project.id).with_for_update())
     dataset = db.get(Dataset, dataset.id)
     saved = {r["idx"]: r["data"] for r in item["rows"]}
     seq = project.seq
     batch = uuid.uuid4().hex[:16]
-    changed = 0
-    for row in db.scalars(select(Row).where(Row.dataset_id == dataset.id, Row.deleted.is_(False))):
+    counts = {"rows": 0, "added": 0, "removed": 0}
+    live = list(db.scalars(select(Row).where(Row.dataset_id == dataset.id, Row.deleted.is_(False))))
+    present = {row.idx for row in live}
+    for row in live:
+        if only_rows is not None and row.idx not in only_rows:
+            continue
         old = saved.get(row.idx)
         if old is None:
+            if remove:
+                seq += 1
+                row.deleted, row.rev, row.seq, row.updated_by, row.updated_at = True, row.rev + 1, seq, actor, utcnow()
+                counts["removed"] += 1
+            continue
+        if not update:
             continue
         data = dict(row.data)
         for column in columns:
@@ -259,15 +289,23 @@ def restore_columns(db: Session, settings: Settings, project: Project, dataset: 
                                  new=data.get(column), kind="restore", batch=batch, by=actor))
         seq += 1
         row.data, row.rev, row.seq, row.updated_by, row.updated_at = data, row.rev + 1, seq, actor, utcnow()
-        changed += 1
-    missing = [c for c in columns if c not in dataset.columns]
+        counts["rows"] += 1
+    if add:
+        fresh = [r for r in item["rows"] if r["idx"] not in present and (only_rows is None or r["idx"] in only_rows)]
+        if fresh:
+            seq += 1
+            db.add_all(Row(dataset_id=dataset.id, idx=r["idx"], data=r["data"], rev=1, seq=seq, updated_by=actor)
+                       for r in fresh)
+            counts["added"] = len(fresh)
+    wanted = list(item["columns"]) if counts["added"] else (columns if update else [])
+    missing = [c for c in wanted if c not in dataset.columns]
     if missing:
         dataset.columns = [*dataset.columns, *missing]
         seq += 1
     project.seq = max(project.seq, seq)
     dataset.updated_at = utcnow()
     db.commit()
-    return {"dataset": dataset.name, "rows": changed, "columns": columns}
+    return {"dataset": dataset.name, **counts, "columns": columns}
 
 
 def restore_project(db: Session, settings: Settings, data: dict[str, Any], slug: str, actor: str,

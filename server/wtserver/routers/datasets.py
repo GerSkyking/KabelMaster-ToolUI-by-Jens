@@ -330,6 +330,8 @@ def update_from_file(
 @router.post("/datasets/{dataset_id}/restore")
 def restore_from_backup(
     dataset_id: int, request: Request, file: UploadFile = File(...), source: str = Form(""), apply: bool = Form(False), only_columns: str = Form(""),
+    update: bool = Form(True), add_rows: bool | None = Form(None), remove_rows: bool | None = Form(None),
+    only_rows: str = Form(""),
     user: User = Depends(current_user), db: Session = Depends(get_db), settings: Settings = Depends(get_settings),
 ) -> dict:
     """Stellt diese eine Liste aus einem heruntergeladenen Backup (ZIP) wieder her. Ohne `apply` nur Vorschau.
@@ -348,17 +350,25 @@ def restore_from_backup(
                                "found": item is not None, "created": data["manifest"].get("created"), "applied": False}
         if item is None:
             return out
-        current = [r.data for r in db.scalars(select(Row).where(Row.dataset_id == dataset.id, Row.deleted.is_(False))
-                                              .order_by(Row.idx, Row.id))]
+        current = {r.idx: r.data for r in db.scalars(select(Row).where(Row.dataset_id == dataset.id, Row.deleted.is_(False))
+                                                     .order_by(Row.idx, Row.id))}
         try:
             wanted = [str(c) for c in json.loads(only_columns)] if only_columns else []
         except ValueError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Ungültige Spaltenauswahl.") from exc
+        try:
+            rows_sel = {int(i) for i in json.loads(only_rows)} if only_rows else None
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Ungültige Zeilenauswahl.") from exc
+        # Ohne Angabe: bei Spaltenauswahl keine Zeilen ergänzen/entfernen, sonst alles wie im Backup
+        add = add_rows if add_rows is not None else not wanted
+        remove = remove_rows if remove_rows is not None else not wanted
         out["columns"] = [c for c in item["columns"]]
-        out["diff"] = backup_engine.diff_dataset(dataset.columns, current, item, wanted)
+        out["diff"] = backup_engine.diff_dataset(dataset.columns, current, item, wanted, update, add, remove, rows_sel)
         if apply:
-            if wanted:
-                out["result"] = backup_engine.restore_columns(db, settings, dataset.project, dataset, item, wanted, user.username)
+            if wanted or rows_sel is not None or not (update and add and remove):
+                out["result"] = backup_engine.restore_merge(db, settings, dataset.project, dataset, item, wanted, update,
+                                                            add, remove, user.username, rows_sel)
             else:
                 out["result"] = backup_engine.restore_dataset(db, settings, dataset.project, dataset, item, user.username)
             audit.record(db, request, "dataset_restored_from_backup", user, f"dataset:{dataset.id}", out["result"])
@@ -367,6 +377,35 @@ def restore_from_backup(
         return out
     finally:
         path.unlink(missing_ok=True)
+
+
+@router.post("/datasets/{dataset_id}/restore/export")
+def export_backup_list(
+    dataset_id: int, file: UploadFile = File(...), source: str = Form(""),
+    user: User = Depends(current_user), db: Session = Depends(get_db),
+) -> Response:
+    """Die Liste aus dem hochgeladenen Backup (ZIP) direkt als Excel-Datei herunterladen."""
+    dataset = get_dataset(db, user, dataset_id, "editor")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+        shutil.copyfileobj(file.file, tmp)
+    path = Path(tmp.name)
+    try:
+        try:
+            data = backup_engine.load_archive(path)
+        except backup_engine.BackupError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    finally:
+        path.unlink(missing_ok=True)
+    item, _ = backup_engine.find_dataset(data, dataset.project.slug, dataset.name, source)
+    if item is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Diese Liste gibt es im Backup nicht.")
+    rows = [r["data"] for r in sorted(item["rows"], key=lambda r: r["idx"])]
+    content = tabular.to_workbook_bytes(item["columns"], rows, item["name"], item["settings"])
+    return Response(
+        content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(item['name'] + ' (Backup).xlsx')}"},
+    )
 
 
 def _live_rows(db: Session, dataset: Dataset) -> list[dict[str, Any]]:
