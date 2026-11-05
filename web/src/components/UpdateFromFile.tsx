@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errorText, upload } from "../api";
 import { datasetBackend, syncDataset } from "../sync";
+import { ColumnPicker, RestoreFromBackup } from "./RestoreFromBackup";
 
 interface FileInfo { name: string; size: number; modified: number }
 interface Result {
@@ -22,6 +23,7 @@ export function UpdateFromFile({ datasetId, projectId, columns, onDone, onClose 
   const [key, setKey] = useState("");
   const [keepInputs, setKeepInputs] = useState(true);
   const [removeMissing, setRemoveMissing] = useState(false);
+  const [only, setOnly] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<Result | null>(null);
@@ -47,7 +49,7 @@ export function UpdateFromFile({ datasetId, projectId, columns, onDone, onClose 
   }, [file, projectId]);
 
   const body = (dryRun: boolean) => ({
-    file, dry_run: dryRun, key, keep_inputs: keepInputs, remove_missing: removeMissing,
+    file, dry_run: dryRun, key, keep_inputs: keepInputs, remove_missing: removeMissing, only_columns: only,
     mode: mode.startsWith("sheet:") ? "sheet" : mode, sheet: mode.startsWith("sheet:") ? mode.slice(6) : "",
   });
 
@@ -97,6 +99,7 @@ export function UpdateFromFile({ datasetId, projectId, columns, onDone, onClose 
   );
 
   return (
+    <>
     <fieldset className="card settings update-card">
       <legend>Liste aus Datei aktualisieren</legend>
       <p className="muted">
@@ -129,6 +132,7 @@ export function UpdateFromFile({ datasetId, projectId, columns, onDone, onClose 
           </select>
         </label>
       </div>
+      <ColumnPicker columns={columns} value={only} onChange={(v) => { setOnly(v); setPreview(null); }} />
       <label className="check"><input type="checkbox" checked={keepInputs} onChange={(e) => { setKeepInputs(e.target.checked); setPreview(null); }} />
         Eintragungen aus der App behalten (Von, Bis, gezogene Länge, Datum)</label>
       <label className="check"><input type="checkbox" checked={removeMissing} onChange={(e) => { setRemoveMissing(e.target.checked); setPreview(null); }} />
@@ -144,5 +148,7 @@ export function UpdateFromFile({ datasetId, projectId, columns, onDone, onClose 
       {error && <p className="error">{error}</p>}
       <p className="muted">Nur online möglich. Geräte, die gerade offline sind, bekommen die Änderungen beim nächsten Abgleich.</p>
     </fieldset>
+    <RestoreFromBackup datasetId={datasetId} columns={columns} onDone={onDone} />
+    </>
   );
 }

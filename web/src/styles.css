@@ -258,3 +258,6 @@ table.data th.sortable { cursor: pointer; }
 .sort-pick select { min-height: 40px; max-width: 200px; }
 @media print { * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
 .update-card .update-summary { margin: 6px 0 0; }
+
+.column-pick summary { cursor: pointer; padding: 6px 0; }
+.column-pick-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 2px 12px; max-height: 240px; overflow: auto; margin: 6px 0; }

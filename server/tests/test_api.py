@@ -310,3 +310,18 @@ def test_update_dataset_from_new_file(admin, dataset):
     assert "Neu" in admin.get(f"/api/datasets/{did}").json()["columns"]
     # Clients holen die Änderungen inkrementell (inkl. gelöschter Zeilen)
     assert any(r["deleted"] for r in rows(admin, did, since=1)["rows"])
+
+
+def test_update_only_selected_columns(admin, dataset):
+    pid, did = dataset["project_id"], dataset["id"]
+
+    def build(ws):
+        ws.append(["Kabel", "Querschnitt", "Länge", "Von", "Bis", "Ist", "Datum", "Neu"])
+        ws.append(["W1", "9x9", 77, None, None, None, None, "a"])
+        ws.append(["W2", "3x1,5", 1, None, None, None, None, "b"])
+
+    _upload_xlsx(admin, pid, "teil.xlsx", build)
+    done = admin.post(f"/api/datasets/{did}/update", json={"file": "teil.xlsx", "key": "Kabel", "only_columns": ["Länge"]}).json()
+    assert done["updated"] == 1 and done["new_columns"] == []  # "Neu" nicht ausgewählt
+    data = {r["data"]["Kabel"]: r["data"] for r in rows(admin, did)["rows"]}
+    assert data["W1"]["Länge"] == 77 and data["W1"]["Querschnitt"] == "3x1,5"  # Querschnitt blieb

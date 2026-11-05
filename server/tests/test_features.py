@@ -469,3 +469,39 @@ def test_revert_single_change(admin, tmp_path):
     assert admin.post(f"/api/datasets/{ds}/history/changes/{change['id']}/revert").status_code == 200
     again = admin.post(f"/api/datasets/{ds}/history/changes/{change['id']}/revert")
     assert again.status_code == 409  # Wert ist schon zurückgesetzt
+
+
+def test_restore_single_dataset_from_downloaded_backup(admin, dataset):
+    first = admin.post("/api/admin/backups", json={}).json()
+    zipped = admin.get(f"/api/admin/backups/{first['id']}/download").content
+    rid = row_id(admin, dataset["id"], "W1")
+    push(admin, dataset["id"], [{"id": rid, "base_rev": 1, "patch": {"Ist": 99}, "base": {"Ist": None}}])
+    url = f"/api/datasets/{dataset['id']}/restore"
+
+    preview = admin.post(url, files={"file": ("b.zip", zipped)}).json()
+    assert preview["found"] and not preview["applied"] and preview["diff"]["changed_cells"] == 1
+    assert [r["data"].get("Ist") for r in rows(admin, dataset["id"])["rows"]].count(99) == 1  # Vorschau ändert nichts
+
+    done = admin.post(url, files={"file": ("b.zip", zipped)}, data={"apply": "true"}).json()
+    assert done["applied"] and done["result"]["rows"] == 4
+    assert all(r["data"].get("Ist") is None for r in rows(admin, dataset["id"])["rows"])
+    assert "pre-restore" in [b["kind"] for b in admin.get("/api/admin/backups").json()["backups"]]
+
+    assert admin.post(url, files={"file": ("x.zip", b"nein")}).status_code == 422
+    other = admin.post(url, files={"file": ("b.zip", zipped)}, data={"source": "gibt/es-nicht"}).json()
+    assert other["found"] is False and other["options"]
+
+
+def test_restore_only_selected_columns(admin, dataset):
+    first = admin.post("/api/admin/backups", json={}).json()
+    zipped = admin.get(f"/api/admin/backups/{first['id']}/download").content
+    rid = row_id(admin, dataset["id"], "W1")
+    push(admin, dataset["id"], [{"id": rid, "base_rev": 1, "patch": {"Ist": 99, "Von": "X"}, "base": {"Ist": None, "Von": None}}])
+    url = f"/api/datasets/{dataset['id']}/restore"
+    cols = '["Ist"]'
+    prev = admin.post(url, files={"file": ("b.zip", zipped)}, data={"only_columns": cols}).json()
+    assert prev["diff"]["changed_cells"] == 1
+    done = admin.post(url, files={"file": ("b.zip", zipped)}, data={"only_columns": cols, "apply": "true"}).json()
+    assert done["applied"] and done["result"]["rows"] == 1
+    first_row = next(r for r in rows(admin, dataset["id"])["rows"] if r["id"] == rid)
+    assert first_row["data"].get("Ist") is None and first_row["data"].get("Von") == "X"  # Von blieb unberührt

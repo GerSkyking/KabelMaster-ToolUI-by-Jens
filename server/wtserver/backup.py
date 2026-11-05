@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from wtserver.config import Settings
-from wtserver.models import Backup, Dataset, Note, Project, ProjectMember, Row, Template, User, utcnow
+from wtserver.excel_styles import STYLE_KEY
+from wtserver.models import Backup, Dataset, Note, Project, ProjectMember, Row, RowChange, Template, User, utcnow
 
 log = logging.getLogger("wtserver.backup")
 FORMAT_VERSION = 1
@@ -165,6 +167,109 @@ def compare(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
 
 # ---- Wiederherstellen ----
 
+def _restore_rows(db: Session, dataset: Dataset, item: dict[str, Any], seq: int, actor: str) -> int:
+    """Ersetzt den Inhalt einer Liste durch die gesicherten Zeilen (vorhandene werden als gelöscht markiert)."""
+    for row in db.scalars(select(Row).where(Row.dataset_id == dataset.id, Row.deleted.is_(False))):
+        row.deleted, row.rev, row.seq, row.updated_by, row.updated_at = True, row.rev + 1, seq, actor, utcnow()
+    dataset.columns, dataset.settings = item["columns"], item["settings"]
+    db.add_all(Row(dataset_id=dataset.id, idx=r["idx"], data=r["data"], rev=1, seq=seq, updated_by=actor)
+               for r in item["rows"])
+    return len(item["rows"])
+
+
+def find_dataset(data: dict[str, Any], slug: str, name: str, source: str = "") -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Liste in der Sicherung finden: gewählte Quelle ("Projekt/Liste"), sonst gleiche Projektkürzel und gleicher Name.
+    Zweiter Rückgabewert: alle Listen der Sicherung zur Auswahl."""
+    options = [{"ref": f"{p['slug']}/{d['name']}", "project": p["name"], "dataset": d["name"], "rows": len(d["rows"]),
+                "columns": d["columns"], "_item": d} for p in data["projects"] for d in p["datasets"]]
+    wanted = source or f"{slug}/{name}"
+    chosen = next((o["_item"] for o in options if o["ref"] == wanted), None)
+    return chosen, [{k: v for k, v in o.items() if k not in ("_item", "columns")} for o in options]
+
+
+def diff_dataset(current_columns: list[str], current_rows: list[dict[str, Any]], item: dict[str, Any],
+                 only: list[str] | None = None) -> dict[str, Any]:
+    """Was eine Wiederherstellung dieser Liste ändern würde (Zeilen über ihre Nummer zugeordnet)."""
+    before = {i: r for i, r in enumerate(current_rows)}
+    after = {r["idx"]: r["data"] for r in item["rows"]}
+    changed = 0
+    for idx in before.keys() & after.keys():
+        for column in dict.fromkeys([*current_columns, *item["columns"]]):
+            if only and column not in only:
+                continue
+            x, y = before[idx].get(column), after[idx].get(column)
+            if x != y and not (x in (None, "") and y in (None, "")):
+                changed += 1
+    if only:  # nur Werte ändern, Zeilen bleiben wie sie sind
+        return {"rows_now": len(before), "rows_backup": len(after), "changed_cells": changed, "added": 0, "removed": 0,
+                "columns_added": [c for c in only if c in item["columns"] and c not in current_columns],
+                "columns_removed": [], "only_columns": only}
+    return {"rows_now": len(before), "rows_backup": len(after), "changed_cells": changed,
+            "added": len(after.keys() - before.keys()), "removed": len(before.keys() - after.keys()),
+            "columns_added": [c for c in item["columns"] if c not in current_columns],
+            "columns_removed": [c for c in current_columns if c not in item["columns"]]}
+
+
+def restore_dataset(db: Session, settings: Settings, project: Project, dataset: Dataset, item: dict[str, Any],
+                    actor: str) -> dict[str, Any]:
+    """Eine einzelne Liste aus einer Sicherung wiederherstellen (vorher wird das Projekt automatisch gesichert)."""
+    create_backup(db, settings, "pre-restore", actor, project_ids=[project.id])
+    project = db.scalar(select(Project).where(Project.id == project.id).with_for_update())
+    seq = project.seq + 1
+    dataset = db.get(Dataset, dataset.id)
+    rows = _restore_rows(db, dataset, item, seq, actor)
+    project.seq = seq
+    dataset.updated_at = utcnow()
+    db.commit()
+    return {"dataset": dataset.name, "rows": rows}
+
+
+def restore_columns(db: Session, settings: Settings, project: Project, dataset: Dataset, item: dict[str, Any],
+                    columns: list[str], actor: str) -> dict[str, Any]:
+    """Nur ausgewählte Spalten aus der Sicherung zurückholen. Zeilen werden über ihre Nummer zugeordnet, es werden
+    keine Zeilen angelegt oder entfernt; alles andere bleibt unverändert."""
+    columns = [c for c in columns if c in item["columns"]]
+    create_backup(db, settings, "pre-restore", actor, project_ids=[project.id])
+    project = db.scalar(select(Project).where(Project.id == project.id).with_for_update())
+    dataset = db.get(Dataset, dataset.id)
+    saved = {r["idx"]: r["data"] for r in item["rows"]}
+    seq = project.seq
+    batch = uuid.uuid4().hex[:16]
+    changed = 0
+    for row in db.scalars(select(Row).where(Row.dataset_id == dataset.id, Row.deleted.is_(False))):
+        old = saved.get(row.idx)
+        if old is None:
+            continue
+        data = dict(row.data)
+        for column in columns:
+            data[column] = old.get(column)
+        if STYLE_KEY in old or STYLE_KEY in data:
+            style = dict(data.get(STYLE_KEY) or {})
+            for column in columns:
+                if column in (old.get(STYLE_KEY) or {}):
+                    style[column] = old[STYLE_KEY][column]
+                else:
+                    style.pop(column, None)
+            data[STYLE_KEY] = style
+        if data == row.data:
+            continue
+        for column in columns:
+            if data.get(column) != row.data.get(column):
+                db.add(RowChange(dataset_id=dataset.id, row_id=row.id, field=column, old=row.data.get(column),
+                                 new=data.get(column), kind="restore", batch=batch, by=actor))
+        seq += 1
+        row.data, row.rev, row.seq, row.updated_by, row.updated_at = data, row.rev + 1, seq, actor, utcnow()
+        changed += 1
+    missing = [c for c in columns if c not in dataset.columns]
+    if missing:
+        dataset.columns = [*dataset.columns, *missing]
+        seq += 1
+    project.seq = max(project.seq, seq)
+    dataset.updated_at = utcnow()
+    db.commit()
+    return {"dataset": dataset.name, "rows": changed, "columns": columns}
+
+
 def restore_project(db: Session, settings: Settings, data: dict[str, Any], slug: str, actor: str,
                     archive_path: Path | None = None) -> dict[str, Any]:
     """Stellt die Listen eines Projekts aus der Sicherung wieder her. Vorhandene Zeilen werden als gelöscht markiert
@@ -186,13 +291,7 @@ def restore_project(db: Session, settings: Settings, data: dict[str, Any], slug:
                               columns=item["columns"], settings=item["settings"])
             db.add(dataset)
             db.flush()
-        else:
-            for row in db.scalars(select(Row).where(Row.dataset_id == dataset.id, Row.deleted.is_(False))):
-                row.deleted, row.rev, row.seq, row.updated_by, row.updated_at = True, row.rev + 1, seq, actor, utcnow()
-            dataset.columns, dataset.settings = item["columns"], item["settings"]
-        db.add_all(Row(dataset_id=dataset.id, idx=r["idx"], data=r["data"], rev=1, seq=seq, updated_by=actor)
-                   for r in item["rows"])
-        restored += len(item["rows"])
+        restored += _restore_rows(db, dataset, item, seq, actor)
     project.seq = seq
     have = {(n.title, n.body) for n in project.notes}
     for note in saved.get("notes", []):  # nur fehlende Notizen zurückholen, vorhandene bleiben unangetastet

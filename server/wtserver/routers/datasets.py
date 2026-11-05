@@ -1,19 +1,23 @@
 """Datensätze (importierte Excel-Listen): Metadaten, Zeilen, Synchronisation, Analyse, Export, Share-Links."""
 from __future__ import annotations
 
+import json
+import shutil
+import tempfile
 import uuid
+from pathlib import Path
 from datetime import timedelta
 from typing import Any, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
 from core.cable.cable_analysis import CableColumns, analyze
 from core.io.excel_reader import ExcelImportError
-from wtserver import audit, tabular
+from wtserver import audit, backup as backup_engine, tabular
 from wtserver.config import Settings, get_settings
 from wtserver.db import get_db
 from wtserver.excel_styles import STYLE_KEY
@@ -58,6 +62,7 @@ class UpdateIn(BaseModel):
     key: str = ""  # Spalte, an der Zeilen wiedererkannt werden; leer = Kabelnummer aus der Zuordnung, sonst Reihenfolge
     keep_inputs: bool = True  # in der App eingetragene Werte (Von/Bis/gezogen/Datum) nicht überschreiben
     remove_missing: bool = False  # Zeilen, die in der Datei fehlen, entfernen
+    only_columns: list[str] = Field(default_factory=list)  # nur diese Spalten übernehmen; leer = alle
     dry_run: bool = False  # nur zählen, nichts ändern
 
 
@@ -226,6 +231,7 @@ def update_from_file(
     if key_column and (key_column not in columns or key_column not in dataset.columns):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             f"Die Schlüsselspalte „{key_column}“ fehlt in der Datei oder in der Liste.")
+    selected = set(body.only_columns) or None
     keep_columns = {mapping.get(k) for k in ("start", "end", "pulled_length", "date")} - {None, ""} if body.keep_inputs else set()
 
     project = db.scalar(select(Project).where(Project.id == dataset.project_id).with_for_update())
@@ -253,13 +259,24 @@ def update_from_file(
         matched.add(old.id)
         data = dict(old.data)
         for column in columns:
+            if selected is not None and column not in selected:
+                continue  # Spalte nicht ausgewählt
             if column in keep_columns and not _empty(old.data.get(column)):
                 continue  # Eintrag aus der App behalten
             data[column] = new.get(column)
-        if STYLE_KEY in new:
-            data[STYLE_KEY] = new[STYLE_KEY]
-        else:
-            data.pop(STYLE_KEY, None)
+        if selected is None:
+            if STYLE_KEY in new:
+                data[STYLE_KEY] = new[STYLE_KEY]
+            else:
+                data.pop(STYLE_KEY, None)
+        elif STYLE_KEY in new:  # Farben nur der gewählten Spalten
+            merged = dict(data.get(STYLE_KEY) or {})
+            for column in selected:
+                if column in new[STYLE_KEY]:
+                    merged[column] = new[STYLE_KEY][column]
+                else:
+                    merged.pop(column, None)
+            data[STYLE_KEY] = merged
         if data == old.data and old.idx == position:
             counts["unchanged"] += 1
             continue
@@ -288,7 +305,7 @@ def update_from_file(
         seq += 1
         db.execute(insert(Row), [{"dataset_id": dataset.id, "idx": item["idx"], "data": item["data"], "rev": 1, "seq": seq,
                                   "deleted": False, "updated_at": now, "updated_by": actor} for item in inserts])
-    added_columns = [c for c in columns if c not in dataset.columns]
+    added_columns = [c for c in columns if c not in dataset.columns and (selected is None or c in selected)]
     if added_columns:
         dataset.columns = [*dataset.columns, *added_columns]
         seq += 1
@@ -308,6 +325,48 @@ def update_from_file(
                  {"file": path.name, **{k: v for k, v in counts.items() if isinstance(v, int)}})
     db.commit()
     return {**counts, "dry_run": False}
+
+
+@router.post("/datasets/{dataset_id}/restore")
+def restore_from_backup(
+    dataset_id: int, request: Request, file: UploadFile = File(...), source: str = Form(""), apply: bool = Form(False), only_columns: str = Form(""),
+    user: User = Depends(current_user), db: Session = Depends(get_db), settings: Settings = Depends(get_settings),
+) -> dict:
+    """Stellt diese eine Liste aus einem heruntergeladenen Backup (ZIP) wieder her. Ohne `apply` nur Vorschau.
+    Gilt für Bearbeiter des Projekts, nicht nur für Administratoren; vorher wird das Projekt automatisch gesichert."""
+    dataset = get_dataset(db, user, dataset_id, "editor")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+        shutil.copyfileobj(file.file, tmp)
+    path = Path(tmp.name)
+    try:
+        try:
+            data = backup_engine.load_archive(path)
+        except backup_engine.BackupError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        item, options = backup_engine.find_dataset(data, dataset.project.slug, dataset.name, source)
+        out: dict[str, Any] = {"options": options, "source": f"{dataset.project.slug}/{dataset.name}" if not source else source,
+                               "found": item is not None, "created": data["manifest"].get("created"), "applied": False}
+        if item is None:
+            return out
+        current = [r.data for r in db.scalars(select(Row).where(Row.dataset_id == dataset.id, Row.deleted.is_(False))
+                                              .order_by(Row.idx, Row.id))]
+        try:
+            wanted = [str(c) for c in json.loads(only_columns)] if only_columns else []
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Ungültige Spaltenauswahl.") from exc
+        out["columns"] = [c for c in item["columns"]]
+        out["diff"] = backup_engine.diff_dataset(dataset.columns, current, item, wanted)
+        if apply:
+            if wanted:
+                out["result"] = backup_engine.restore_columns(db, settings, dataset.project, dataset, item, wanted, user.username)
+            else:
+                out["result"] = backup_engine.restore_dataset(db, settings, dataset.project, dataset, item, user.username)
+            audit.record(db, request, "dataset_restored_from_backup", user, f"dataset:{dataset.id}", out["result"])
+            db.commit()
+            out["applied"] = True
+        return out
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def _live_rows(db: Session, dataset: Dataset) -> list[dict[str, Any]]:
