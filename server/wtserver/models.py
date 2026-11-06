@@ -195,7 +195,7 @@ class Backup(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     filename: Mapped[str] = mapped_column(String(255), unique=True)
-    kind: Mapped[str] = mapped_column(String(10), default="manual")  # manual | auto | pre-restore | upload
+    kind: Mapped[str] = mapped_column(String(20), default="manual")  # manual | auto | pre-restore | upload
     created_by: Mapped[str] = mapped_column(String(150), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     size: Mapped[int] = mapped_column(Integer, default=0)
