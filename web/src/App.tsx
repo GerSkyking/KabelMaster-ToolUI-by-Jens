@@ -5,6 +5,7 @@ import { AccountPage } from "./pages/AccountPage";
 import { AdminPage } from "./pages/AdminPage";
 import { BoardPage } from "./pages/BoardPage";
 import { DatasetPage } from "./pages/DatasetPage";
+import { ExcelToolsPage } from "./pages/ExcelToolsPage";
 import { HelpPage } from "./pages/HelpPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectPage } from "./pages/ProjectPage";
@@ -66,6 +67,7 @@ function Shell({ children }: { children: ReactNode }) {
         <Link to="/" className="brand">UW Kabel-Master ToolUI <small>by Jens</small></Link>
         <nav>
           <Link to="/">Projekte</Link>
+          <Link to="/excel">Excel-Tools</Link>
           <Link to="/shop">Einkauf</Link>
           <Link to="/board">Whiteboard</Link>
           <Link to="/schedule">Kalender</Link>
@@ -94,6 +96,7 @@ export function App() {
       <Route path="/" element={<RequireAuth><Shell><ProjectsPage /></Shell></RequireAuth>} />
       <Route path="/projects/:id" element={<RequireAuth><Shell><ProjectPage /></Shell></RequireAuth>} />
       <Route path="/datasets/:id" element={<RequireAuth><Shell><DatasetPage /></Shell></RequireAuth>} />
+      <Route path="/excel" element={<RequireAuth><Shell><ExcelToolsPage /></Shell></RequireAuth>} />
       <Route path="/shop" element={<RequireAuth><Shell><ShopPage /></Shell></RequireAuth>} />
       <Route path="/board" element={<RequireAuth><Shell><BoardPage /></Shell></RequireAuth>} />
       <Route path="/projects/:id/board" element={<RequireAuth><Shell><BoardPage /></Shell></RequireAuth>} />
